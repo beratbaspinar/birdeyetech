@@ -76,6 +76,9 @@ htmlcov/
 /status.txt
 /context.md
 /capture_guide.md
+# Decision log: same class as the three above — a session log describing this
+# room, this rig and this machine. Local-only by the same rule.
+/decisions.md
 # Agent instructions: workflow preferences, machine specs and process notes.
 # Scaffolding for how the work gets done, not documentation of what was built,
 # so it is kept local rather than shipped in a portfolio repo.
