@@ -27,7 +27,7 @@ import numpy.typing as npt
 
 from mcreid.track.per_view import Detection, PerViewConfig, PerViewTracker
 from mcreid.track.reid_models import DEFAULT_EMBEDDER, Embedder, build_embedder
-from mcreid.utils.device import resolve_device
+from mcreid.utils.device import DeviceSpec, resolve_device
 from mcreid.utils.logging import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only for type checkers
@@ -39,6 +39,30 @@ FloatArray = npt.NDArray[np.float64]
 Image = npt.NDArray[np.uint8]
 
 PERSON_CLASS = 0
+
+
+def precision_kwargs(device: DeviceSpec) -> dict[str, Any]:
+    """Half-precision flag under whichever name this Ultralytics uses.
+
+    8.4 renamed `half` to `quantize` and warns on every call with the old one.
+    Probing the config once keeps a single install from either spamming
+    deprecation warnings or silently losing fp16 on a future rename.
+
+    Module-level rather than a method because the multi-camera backend needs the
+    same answer and must not reach into another class to get it.
+    """
+    if not (device.kind == "cuda" and device.use_half):
+        return {}
+    try:
+        from ultralytics.cfg import DEFAULT_CFG_DICT
+    except ImportError:  # pragma: no cover - very old/new ultralytics
+        return {"half": True}
+    if "quantize" in DEFAULT_CFG_DICT:
+        return {"quantize": "fp16"}
+    if "half" in DEFAULT_CFG_DICT:
+        return {"half": True}
+    logger.warning("no half-precision flag found in this Ultralytics; running fp32")
+    return {}
 
 
 @dataclass(frozen=True)
@@ -107,24 +131,7 @@ class GpuPerViewBackend:
         self._predict_kwargs = self._precision_kwargs()
 
     def _precision_kwargs(self) -> dict[str, Any]:
-        """Half-precision flag under whichever name this Ultralytics uses.
-
-        8.4 renamed `half` to `quantize` and warns on every call with the old
-        one. Probing the config once keeps a single install from either spamming
-        deprecation warnings or silently losing fp16 on a future rename.
-        """
-        if not (self.device.kind == "cuda" and self.device.use_half):
-            return {}
-        try:
-            from ultralytics.cfg import DEFAULT_CFG_DICT
-        except ImportError:  # pragma: no cover - very old/new ultralytics
-            return {"half": True}
-        if "quantize" in DEFAULT_CFG_DICT:
-            return {"quantize": "fp16"}
-        if "half" in DEFAULT_CFG_DICT:
-            return {"half": True}
-        logger.warning("no half-precision flag found in this Ultralytics; running fp32")
-        return {}
+        return precision_kwargs(self.device)
 
     def detect(self, image: Image) -> tuple[FloatArray, FloatArray]:
         """Returns (boxes (N,4) xyxy, scores (N,)) for the person class only."""

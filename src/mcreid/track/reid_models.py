@@ -22,6 +22,7 @@ claim. The detector (YOLO11x on COCO) is equally pretrained; the claim is that
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -150,12 +151,9 @@ class _CropEmbedder:
         """Return an eval-mode torch module mapping crop tensors to features."""
         raise NotImplementedError
 
-    def __call__(self, image: Image, boxes: FloatArray) -> FloatArray:
-        torch = self._torch
-        boxes = np.asarray(boxes, dtype=np.float64)
-        if boxes.shape[0] == 0:
-            return np.zeros((0, self.dim), dtype=np.float64)
-
+    def _crops(self, image: Image, boxes: FloatArray) -> list[Image]:
+        """Cut and resize one crop per box. All crops come out the same size,
+        which is what lets crops from *different* views share one forward pass."""
         height, width = image.shape[:2]
         crop_h, crop_w = self.spec.crop_hw
         crops = []
@@ -167,8 +165,12 @@ class _CropEmbedder:
             patch = image[y1:y2, x1:x2]
             if patch.size == 0:
                 patch = np.zeros((crop_h, crop_w, 3), dtype=np.uint8)
-            crops.append(cv2.resize(patch, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR))
+            resized = cv2.resize(patch, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+            crops.append(np.asarray(resized, dtype=np.uint8))
+        return crops
 
+    def _embed_crops(self, crops: list[Image]) -> FloatArray:
+        torch = self._torch
         stacked = np.stack(crops)[:, :, :, ::-1]  # BGR -> RGB
         tensor = torch.from_numpy(np.ascontiguousarray(stacked)).permute(0, 3, 1, 2)
         tensor = tensor.to(self.device.torch_device).float().div_(255.0)
@@ -182,7 +184,44 @@ class _CropEmbedder:
                 outputs.append(self.model(tensor[start : start + self.batch_size]).float())
         features = torch.cat(outputs, dim=0)
         features = torch.nn.functional.normalize(features, dim=1)
-        return features.cpu().numpy().astype(np.float64)
+        return np.asarray(features.cpu().numpy(), dtype=np.float64)
+
+    def __call__(self, image: Image, boxes: FloatArray) -> FloatArray:
+        boxes = np.asarray(boxes, dtype=np.float64)
+        if boxes.shape[0] == 0:
+            return np.zeros((0, self.dim), dtype=np.float64)
+        return self._embed_crops(self._crops(image, boxes))
+
+    def embed_multi(
+        self, images: Sequence[Image], boxes: Sequence[FloatArray]
+    ) -> list[FloatArray]:
+        """Embed several views' boxes in ONE forward pass, split back per view.
+
+        A two-camera live rig otherwise pays the kernel-launch and
+        weight-residency cost once per camera per frame for a handful of crops
+        each — the GPU is idle between two tiny batches. Concatenating first and
+        slicing after is numerically identical (every crop is normalised
+        independently) and is the whole reason `_crops` is separate from
+        `_embed_crops`.
+        """
+        counts: list[int] = []
+        crops: list[Image] = []
+        for image, view_boxes in zip(images, boxes, strict=True):
+            array = np.asarray(view_boxes, dtype=np.float64)
+            view_crops = self._crops(image, array) if array.shape[0] else []
+            counts.append(len(view_crops))
+            crops.extend(view_crops)
+
+        if not crops:
+            return [np.zeros((0, self.dim), dtype=np.float64) for _ in counts]
+
+        features = self._embed_crops(crops)
+        out: list[FloatArray] = []
+        start = 0
+        for count in counts:
+            out.append(features[start : start + count])
+            start += count
+        return out
 
 
 class ImageNetResnet18Embedder(_CropEmbedder):
@@ -261,3 +300,25 @@ def build_embedder(
         return ImageNetResnet18Embedder(spec, resolved, batch_size)
     weights = ensure_weights(spec, weights_dir)
     return OsnetEmbedder(spec, resolved, batch_size, weights)
+
+
+def embed_views(
+    embedder: Embedder, images: Sequence[Image], boxes: Sequence[FloatArray]
+) -> list[FloatArray]:
+    """One embedding array per view, batched across views where possible.
+
+    `embed_multi` is deliberately NOT on the `Embedder` protocol: the toy
+    generator and every test double implement the single-image call and would
+    all have to grow a second method they cannot meaningfully batch. Dispatching
+    on its presence keeps them working — they simply pay per-view calls, which
+    on a stub costs nothing.
+    """
+    batched = getattr(embedder, "embed_multi", None)
+    if callable(batched):
+        result: list[FloatArray] = list(batched(images, boxes))
+        if len(result) != len(images):
+            raise RuntimeError(
+                f"embed_multi returned {len(result)} arrays for {len(images)} views"
+            )
+        return result
+    return [embedder(image, box) for image, box in zip(images, boxes, strict=True)]
