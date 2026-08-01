@@ -537,6 +537,73 @@ Note for anyone reading the older session notes: the retirement latency is
 `reid_window_frames` counts from the last measurement, so it overlaps the coast
 window instead of following it.
 
+### Calibrated multi-camera — a shared floor, and what it fixes
+
+```bash
+uv run mcreid-calibrate floor --markers calib/floor_markers.yaml --out calib/rig_floor.json
+```
+
+```bash
+uv run mcreid-live-multi run --devices 0,1 --rig calib/rig_floor.json
+```
+
+Fitting each camera's homography against **one shared list of floor points** is
+what makes a position mean the same thing to every camera. Supplying the rig
+turns the geometric gates back on and draws the BEV, because those are the same
+decision.
+
+**Measured, real OSNet on real WILDTRACK crops, exact rig geometry:**
+
+| scene | uncalibrated (appearance-only) | calibrated |
+|---|---|---|
+| two people, one per camera — stay 2 IDs | 31.0 % | **100.0 %** |
+| two people both visible in both — stay 2 IDs | 4.0 % | **100.0 %** |
+| one person, two cameras — holds 1 ID | 96.0 % | **99.0 %** |
+
+Geometry supplies exactly the evidence a zero-shot embedder cannot: two
+detections a metre apart on a *known* floor are strong evidence of two people,
+and no appearance threshold recovers that.
+
+**The gate refuses a rig whose cameras disagree, and it needs ≥ 6 markers to be
+able to.** Four correspondences fit a homography *exactly*, so a residual
+measured on them is ~1e-15 for any rig including a badly mismarked one — the
+gate would be an algebraic identity. Six or more allows **leave-one-out**: each
+camera is re-fitted without each marker in turn and scored on the one held out.
+Ceilings are 0.25 m held-out error and 0.35 m cross-camera disagreement, the
+latter being the birth-clustering radius itself.
+
+**Marking accuracy is the binding constraint, and the lowest-resolution camera
+decides.** Measured pass rate over 12 seeds: 0.5 px of click error 100 %, 1.0 px
+75 %, 1.5 px 50 %, 2.0 px 8 %. At 2 px the 640x480 camera reaches 0.40 m
+held-out error against the 720p camera's 0.13 m, because one of its pixels
+subtends several centimetres of a 6 m room. More markers buy the accuracy back —
+at a fixed 1.5 px: 6 markers 0 %, 8 markers 50 %, **12 markers 92 %**.
+
+#### The limit this does not fix: the box's bottom edge
+
+The foot-point error that dominates the WILDTRACK results dominates here too,
+and it hits the *helpful* direction rather than the harmful one. Raising a box's
+bottom edge by a fraction of its height — what an occluder or a frame edge
+does — and re-measuring the calibrated arm:
+
+| bottom-edge error | cross-camera foot-point gap | 2 people stay 2 IDs | 1 person holds 1 ID |
+|---|---|---|---|
+| 0 % | 0.08 m | 100 % | 99 % |
+| 5 % | 0.25 m | 100 % | 100 % |
+| 10 % | 0.48 m | 100 % | 98 % |
+| 20 % | 1.02 m | 100 % | **33 %** |
+| 30 % | 1.48 m | 100 % | **13 %** |
+
+Separating two people is robust — they are metres apart and a foot-point error
+of a metre does not fuse them. Holding *one* person across two views collapses,
+because the two views' foot points diverge until the same person lands at two
+different places on the floor and fails to merge. **The measured detector
+foot-point error on WILDTRACK is 0.62–2.17 m**, which sits in the 10–30 % band
+where that column falls apart. So the honest forecast for a live calibrated run
+is that two-person separation will hold and one-person cross-view hold may not,
+and the fix is a better foot point — not a better homography and not a better
+embedder.
+
 ### Your own cameras — multi-camera rig
 
 ```bash
