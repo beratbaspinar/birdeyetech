@@ -449,3 +449,82 @@ def floor(
     out.parent.mkdir(parents=True, exist_ok=True)
     rig.save(out)
     typer.secho(f"rig accepted and written to {out}", fg=typer.colors.GREEN)
+
+
+@app.command()
+def mark(
+    image: Path = typer.Option(..., help="Still from this camera, e.g. calib/shots/cam0.png"),
+    camera_id: str = typer.Option(..., help="Which camera this still came from, e.g. cam0."),
+    markers: Path = typer.Option(
+        Path("calib/floor_markers.yaml"), help="Floor-marker YAML to create or update."
+    ),
+    n_markers: int = typer.Option(12, help="How many markers you laid out."),
+    zoom: int = typer.Option(16, help="Loupe magnification. A click resolves 1/zoom px."),
+) -> None:
+    """Click floor markers with a sub-pixel loupe, straight into the YAML.
+
+    Marking accuracy is what decides whether a rig passes: measured pass rate is
+    100 % at 0.5 px of click error and 8 % at 2.0 px. A click on the main view
+    is worth about one screen pixel, which on a scaled-to-fit frame is already
+    worse than that — so every marker is placed twice. Coarse click on the main
+    view, then click again inside the loupe, where 16x magnification makes the
+    click worth 1/16 px. The loupe click is what gets saved.
+
+    Run once per camera; the file accumulates, so cam0 and cam1 can be marked in
+    separate sittings. Only the world coordinates are left to type by hand.
+    """
+    import cv2
+
+    from mcreid.calib.marker_ui import (
+        HELP,
+        load_document,
+        merge_markers,
+        run_marker_ui,
+        save_document,
+    )
+
+    setup_logging("INFO")
+    if not image.is_file():
+        raise typer.BadParameter(f"image not found: {image}")
+    frame = cv2.imread(str(image))
+    if frame is None:
+        raise typer.BadParameter(f"could not read {image} as an image")
+
+    document = load_document(markers)
+    existing_entry = (document.get("cameras") or {}).get(camera_id) or {}
+    existing = existing_entry.get("image_points")
+    points: list[tuple[float, float] | None] | None = None
+    if existing and len(existing) == n_markers:
+        points = [(float(x), float(y)) for x, y in existing]
+        typer.echo(f"loaded {n_markers} existing points for {camera_id} — refine or re-click")
+
+    typer.echo(f"{camera_id}: {frame.shape[1]}x{frame.shape[0]}, {n_markers} markers")
+    for line in HELP:
+        typer.echo(f"  {line}")
+
+    state = run_marker_ui(
+        np.asarray(frame, dtype=np.uint8),
+        camera_id=camera_id,
+        n_markers=n_markers,
+        existing=points,
+        zoom=zoom,
+    )
+    if state is None:
+        typer.secho("quit without saving", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    document = merge_markers(
+        document, camera_id, state.points, (frame.shape[1], frame.shape[0])
+    )
+    save_document(markers, document)
+    typer.secho(f"wrote {n_markers} points for {camera_id} -> {markers}", fg=typer.colors.GREEN)
+
+    marked = sorted(document.get("cameras") or {})
+    world = document.get("world_points") or []
+    typer.echo(f"cameras marked so far: {marked}")
+    if len(world) != n_markers:
+        typer.secho(
+            f"still to do: type {n_markers} world_points (metres from your tape measure) "
+            f"into {markers} — currently {len(world)}.",
+            fg=typer.colors.YELLOW,
+        )
