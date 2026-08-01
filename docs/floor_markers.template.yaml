@@ -1,0 +1,73 @@
+# Floor markers for `mcreid-calibrate floor`.
+#
+# ONE shared list of world points; every camera lists where IT sees each of
+# them, in the SAME ORDER. Sharing the world list is the whole mechanism — it is
+# what makes a position mean the same thing to both cameras.
+#
+# Copy to calib/floor_markers.yaml and fill in. Twelve markers, not four:
+# four correspondences fit a homography exactly, so the residual gate would be
+# an algebraic identity that cannot fail. Measured pass rate at 1.5 px of click
+# error: 6 markers 0 %, 8 markers 50 %, 12 markers 92 %.
+
+# Metres on the floor, in YOUR chosen frame. Pick one corner of the room as
+# (0, 0) and one wall as the +x axis; the numbers only have to be consistent
+# with each other, not with anything outside this file.
+#
+# Spread them over the whole shared floor and do NOT put them all on one line
+# or in one neat rectangle — a degenerate layout fits any homography and hides
+# every error.
+world_points:
+  - [0.50, 0.50]
+  - [2.50, 0.50]
+  - [4.00, 0.60]
+  - [0.60, 2.00]
+  - [2.20, 1.80]
+  - [3.80, 2.10]
+  - [0.70, 3.20]
+  - [2.60, 3.00]
+  - [4.10, 3.40]
+  - [1.50, 1.20]
+  - [3.20, 1.40]
+  - [1.80, 2.60]
+
+cameras:
+  cam0:
+    # MUST match what the camera actually delivers — a homography is in pixels,
+    # so using one fitted at 1280x720 on a 640x480 feed scales every position by
+    # 2x and produces a plausible, wrong map. The run refuses if these disagree.
+    image_size: [1280, 720]
+    # Pixel coordinates of the SAME twelve markers, in the SAME order.
+    # Click ZOOMED IN. Measured pass rate: 0.5 px of error 100 %, 1.0 px 75 %,
+    # 1.5 px 50 %, 2.0 px 8 %.
+    image_points:
+      - [0, 0]   # marker 0  <- replace all twelve
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+
+  cam1:
+    # The LOWEST-RESOLUTION camera decides whether the rig passes: at 2 px of
+    # click error a 640x480 camera reaches 0.40 m of floor error against a 720p
+    # camera's 0.13 m, because one of its pixels subtends several centimetres.
+    image_size: [640, 480]
+    image_points:
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
+      - [0, 0]
