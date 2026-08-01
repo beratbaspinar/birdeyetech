@@ -416,6 +416,70 @@ detection mints a tentative track that the lifecycle deletes three frames later,
 so the mint counter climbs on a live camera even when identity is perfectly
 stable.
 
+### Live webcams — two or more cameras, still no calibration
+
+Probe first. Which capture backend a device negotiates is not cosmetic: on the
+development rig one USB camera reads **5.0 FPS through DirectShow and 14.9
+through Media Foundation**, at 640x480, 320x240 *and* 160x120 — so it is the
+media type each backend picks, not bandwidth. `probe` measures every device on
+every backend, alone and all together, and prints the run command to copy.
+
+```bash
+uv run mcreid-live-multi probe
+```
+
+```bash
+uv run mcreid-live-multi run --devices 0,1 --backend msmf --nominal-fps 30,15
+```
+
+One shared detector and one shared embedder serve every camera, batched: two
+views cost one `predict` call and one embedding forward pass, not two of each.
+Each camera gets its own capture thread and its own `PerViewTracker`; the fusion
+stage sees a flat list of observations tagged `cam0`, `cam1`, … — the same
+contract the 7-camera WILDTRACK path runs on.
+
+**Fusion here is appearance-only, and that is a deliberate correction rather
+than a simplification.** Two uncalibrated cameras do not share a floor. Give
+each a pixel-plane stand-in and their "world" coordinates are scaled pixels in
+their own frame — so a geometric gate is not merely uninformative, it is
+answering a question about a floor that does not exist, and it rules *wrongly*
+in both directions. So every geometric gate is opened and the measured
+appearance gates decide alone. On the synthetic two-camera control, the
+geometry-gated config places one person ~4.9 pseudo-metres apart and mints two
+identities that never merge; the appearance-only profile holds one. There is no
+BEV panel and nothing claims a metric position.
+
+The end-of-run **cross-view ledger** is the evidence to read — per identity, the
+set of cameras that ever supported it, how many frames had two cameras at once,
+and when they first agreed:
+
+```
+id 1: CROSS-VIEW cameras ('cam0', 'cam1'), 29 frames with >=2 cameras at once,
+      first together at frame 24, held 6.9 s
+```
+
+Raw per-camera video and a per-frame timestamp CSV are recorded unconditionally,
+from the capture threads, before the processing loop gets a say — so a session
+is replayable offline at full sensor rate whatever the live rate turns out to
+be, and a disk pre-flight refuses to start a run that would not fit. Frame
+counts in the CSV and the mp4 match exactly; the CSV is authoritative for
+anything time-based, because a camera that delivers 15 FPS into a 30 FPS
+container header plays back at twice life speed (the run warns when it detects
+this).
+
+Measured on an RTX 4060 Laptop, 1280x720 + 640x480: **31.9 FPS end-to-end on an
+empty room, 22.3 FPS with one person in frame.** Detection costs 12.5 ms for one
+view and 22.5 ms for two; batching the embedder across views is close to free
+(15.5 ms for one crop, 15.7 ms for two from different cameras). Models are
+warmed before the loop — skipping that puts a **5.4 s** first-frame stall
+exactly where someone walks in, and averages it into the reported frame rate.
+
+Known and reported rather than hidden: without a homography, cross-view identity
+rests entirely on OSNet separating one person seen from two angles, and the
+measured same-person cross-camera distance on WILDTRACK is 0.525 against a 0.56
+gate. Fragmentation into per-camera identities that the duplicate merge then
+heals over several frames is the expected failure mode, not a surprise.
+
 ### Your own cameras — multi-camera rig
 
 ```bash
@@ -510,12 +574,15 @@ In the order they would pay off:
 src/mcreid/
   calib/    calib.json schema, intrinsics, ground homography, projection, sanity report
   sim/      virtual cameras, scripted scenes, synthetic rendering
-  track/    per-view tracking; CPU path and GPU path (YOLO + selectable ReID)
+  track/    per-view tracking; CPU path, GPU path, shared-model multi-view path
   fusion/   ground Kalman, appearance gallery, association, global IDs, dormant gallery
   eval/     identity metrics, WILDTRACK protocol (MODA/MODP)
   viz/      BEV canvas, overlays, demo composition
-  live.py   single-camera live session (testable without a camera or GPU)
-  cli/      calibrate · demo · live · sync · eval · wildtrack · wildtrack-demo
+  capture.py     threaded N-camera capture + unconditional raw recording
+  live.py        single-camera live session (testable without a camera or GPU)
+  live_multi.py  N-camera live session, appearance-only fusion (likewise testable)
+  cli/      calibrate · demo · live · live-multi · sync · eval · wildtrack ·
+            wildtrack-demo · hpc-demo
 ```
 
 - [docs/wildtrack_results.md](docs/wildtrack_results.md) — real-footage validation
