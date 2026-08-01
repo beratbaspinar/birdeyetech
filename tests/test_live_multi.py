@@ -13,6 +13,7 @@ failure when the profile is off.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -448,3 +449,71 @@ def test_a_partial_fourcc_never_puts_nul_bytes_on_stdout():
     assert "\x00" not in partial and partial == "YU"
     assert _fourcc_of(_Capture(0)) == "?"
     assert _fourcc_of(_Capture(-1)) == "?"
+
+
+# --- diagnostics ---------------------------------------------------------------------------------
+
+
+class _BlackoutBackend(_TwoCameraBackend):
+    """Both cameras lose the person for a window, then get them back."""
+
+    def __init__(self, window: tuple[int, int]) -> None:
+        super().__init__()
+        self.window = window
+
+    def step(self, frames, frame: int) -> list[ViewObservation]:
+        if self.window[0] <= frame < self.window[1]:
+            return []
+        return super().step(frames, frame)
+
+
+def test_the_shadow_probe_needs_no_multi_camera_changes(tmp_path):
+    """Claimed cheap on this path because ShadowProbe reads the fused manager
+    (last_ground, last_assignment, dormant) and never touches a camera. Measured
+    rather than asserted: a full leave/return through a two-camera rig has to
+    produce rows, a written pair of files, and a resurrection."""
+    from mcreid.diagnostics.shadow import ShadowProbe, summarise
+
+    config = appearance_only_fusion_config()
+    shadow = ShadowProbe(
+        tmp_path / "shadow", gate=config.dormant.appearance_distance, top_k=config.dormant.top_k
+    )
+    session = MultiLiveSession(
+        backend=_BlackoutBackend((30, 460)),
+        rig=uncalibrated_rig(SIZES),
+        config=MultiLiveConfig(tile_height=120),
+        fusion_config=config,
+        shadow=shadow,
+    )
+    _run(session, steps=520)
+
+    assert session.manager.dormant.n_resurrected == 1
+    assert session.reported_ids == [1], "the identity must survive the absence"
+    assert session.ledger.multi_camera_ids == [1]
+    assert shadow.rows, "a leave/return through two cameras produced no probe rows"
+
+    jsonl, csv_path = shadow.write()
+    assert jsonl.stat().st_size > 0 and csv_path.stat().st_size > 0
+    assert any("measurements" in line for line in summarise(shadow.rows, shadow.gate))
+
+
+def test_shadow_rows_carry_both_query_kinds_on_the_multi_camera_path():
+    """The obs query is what _resurrect probes with, the track EMA what
+    _adopt_dormant_identity uses. Losing either on this path would make a
+    multi-camera session's log not comparable with s1/s3."""
+    from mcreid.diagnostics.shadow import QUERY_OBS, QUERY_TRACK_EMA, ShadowProbe
+
+    config = appearance_only_fusion_config()
+    shadow = ShadowProbe(
+        Path("unused"), gate=config.dormant.appearance_distance, top_k=config.dormant.top_k
+    )
+    session = MultiLiveSession(
+        backend=_BlackoutBackend((30, 460)),
+        rig=uncalibrated_rig(SIZES),
+        config=MultiLiveConfig(tile_height=120),
+        fusion_config=config,
+        shadow=shadow,
+    )
+    _run(session, steps=520)
+    sources = {row.source for row in shadow.rows}
+    assert sources == {QUERY_OBS, QUERY_TRACK_EMA}
