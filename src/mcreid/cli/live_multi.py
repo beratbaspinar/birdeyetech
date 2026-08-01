@@ -27,6 +27,7 @@ from pathlib import Path
 import cv2
 import typer
 
+from mcreid.calib.schema import RigCalib
 from mcreid.capture import (
     CAPTURE_BACKENDS,
     DEFAULT_BACKEND,
@@ -349,6 +350,16 @@ def run(
     span_m: float = typer.Option(
         6.0, help="Assumed floor span of the frame height in the pixel-plane stand-in."
     ),
+    rig: Path = typer.Option(
+        None,
+        help=(
+            "CALIBRATED rig JSON from `mcreid-calibrate floor`. Supplying it changes "
+            "the run in three ways: the cameras share one metric floor, the geometric "
+            "gates come back on (they are real evidence again), and the BEV panel is "
+            "drawn. Without it the run is uncalibrated and --occupancy decides how "
+            "much appearance is asked to carry alone."
+        ),
+    ),
     occupancy: str = typer.Option(
         "single",
         help=(
@@ -456,31 +467,61 @@ def run(
 
         if occupancy not in {"single", "multi"}:
             raise typer.BadParameter(f"--occupancy must be 'single' or 'multi', got {occupancy!r}")
-        rig = uncalibrated_rig(sizes, span_m)
+
+        metric = rig is not None
         flag_config = resolve_fusion_config(dormant_gate, single_occupant)
-        appearance_only = occupancy == "single"
-        fusion_config = (
-            appearance_only_fusion_config(flag_config)
-            if appearance_only
-            else (flag_config or FusionConfig())
-        )
-        typer.echo("uncalibrated rig: no shared floor plane, no BEV, no metric claim.")
-        if appearance_only:
-            typer.secho(f"--occupancy single: {SINGLE_OCCUPANT_WARNING}", fg=typer.colors.YELLOW)
-        else:
+        if metric:
+            world = RigCalib.load(rig)
+            missing = [c for c in sizes if c not in world.camera_ids]
+            if missing:
+                raise typer.BadParameter(
+                    f"the rig {rig} has cameras {world.camera_ids} but this run opened "
+                    f"{sorted(sizes)}; {missing} are uncalibrated. Camera ids are assigned "
+                    "by POSITION in --devices, so a reordered --devices silently mismatches "
+                    "a rig — check the order before blaming the calibration."
+                )
+            for camera_id, (width, height) in sizes.items():
+                declared = world.get(camera_id).intrinsics.image_size
+                if declared != (width, height):
+                    raise typer.BadParameter(
+                        f"{camera_id}: the rig was calibrated at {declared[0]}x{declared[1]} "
+                        f"but the camera is delivering {width}x{height}. A homography is "
+                        "in pixels; using it at another resolution silently scales every "
+                        "position. Re-run --width/--height to match, or re-calibrate."
+                    )
+            fusion_config = flag_config  # None keeps the shipped, geometry-gated defaults
             typer.secho(
-                "--occupancy multi: geometric gates stay ACTIVE on pixel-plane "
-                "coordinates that two cameras do not share. Strangers are safe; "
-                "cross-view fusion will not happen. Measured on real crops: 0% of "
-                "genuine cross-view pairs fuse under this config.",
-                fg=typer.colors.YELLOW,
+                f"CALIBRATED rig from {rig}: cameras share one metric floor, geometric "
+                "gates are ACTIVE, BEV on.",
+                fg=typer.colors.GREEN,
             )
+        else:
+            world = uncalibrated_rig(sizes, span_m)
+            appearance_only = occupancy == "single"
+            fusion_config = (
+                appearance_only_fusion_config(flag_config)
+                if appearance_only
+                else (flag_config or FusionConfig())
+            )
+            typer.echo("uncalibrated rig: no shared floor plane, no BEV, no metric claim.")
+            if appearance_only:
+                typer.secho(
+                    f"--occupancy single: {SINGLE_OCCUPANT_WARNING}", fg=typer.colors.YELLOW
+                )
+            else:
+                typer.secho(
+                    "--occupancy multi: geometric gates stay ACTIVE on pixel-plane "
+                    "coordinates that two cameras do not share. Strangers are safe; "
+                    "cross-view fusion will not happen. Measured on real crops: 0% of "
+                    "genuine cross-view pairs fuse under this config.",
+                    fg=typer.colors.YELLOW,
+                )
         if single_occupant:
             typer.echo("single-occupant mode: dormant duplicate suppression + scoped retry on.")
         if dormant_gate is not None:
             typer.echo(f"dormant appearance gate overridden: {dormant_gate:.2f}")
 
-        dormant_cfg = fusion_config.dormant
+        dormant_cfg = (fusion_config or FusionConfig()).dormant
         shadow = (
             ShadowProbe(
                 shadow_probe, gate=dormant_cfg.appearance_distance, top_k=dormant_cfg.top_k
@@ -492,17 +533,18 @@ def run(
             typer.echo(f"shadow probe ON (diagnostic): recording to {shadow_probe}.jsonl/.csv")
 
         stepper = MultiViewBackend(
-            camera_ids=rig.camera_ids,
+            camera_ids=world.camera_ids,
             config=GpuViewConfig(
                 weights=weights, imgsz=imgsz, conf_threshold=conf, embedder=embedder
             ),
         )
         session = MultiLiveSession(
             backend=stepper,
-            rig=rig,
+            rig=world,
             config=MultiLiveConfig(span_m=span_m, tile_height=tile_height),
             fusion_config=fusion_config,
             shadow=shadow,
+            metric=metric,
         )
         typer.echo(f"warming up the models ({stepper.warmup(sizes):.1f} s)")
 
@@ -537,7 +579,7 @@ def run(
                 # cameras: at 30 vs 15 FPS the slower camera is absent from half
                 # the steps, so a snapshot of one step reads as a dead camera.
                 contribution = " ".join(
-                    f"{cid}:{session.frames_by_camera.get(cid, 0)}" for cid in rig.camera_ids
+                    f"{cid}:{session.frames_by_camera.get(cid, 0)}" for cid in world.camera_ids
                 )
                 logger.info(
                     "%.1f FPS (%.1f processing) | fused steps per cam %s | tracks %d "
@@ -605,7 +647,7 @@ def run(
     typer.echo("cross-view ledger — the acceptance evidence:")
     for line in session.cross_view_report():
         typer.echo(line)
-    if occupancy == "single" and len(session.ledger.multi_camera_ids) >= 1:
+    if not metric and occupancy == "single" and len(session.ledger.multi_camera_ids) >= 1:
         typer.secho(
             "    read this only as a SINGLE-OCCUPANT result: a CROSS-VIEW verdict is "
             "produced by two different people 76.7% of the time under this config, so "

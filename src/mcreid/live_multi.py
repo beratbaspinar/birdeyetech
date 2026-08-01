@@ -251,6 +251,10 @@ class MultiLiveConfig:
     reacquire_gap_s: float = 1.0
     tile_height: int = 480
     """Height each camera tile is scaled to in the mosaic."""
+    show_bev: bool = True
+    """Draw the metric floor plan. Ignored unless the rig is calibrated — a BEV
+    built on pixel-plane stand-ins would be a map of nothing, drawn to scale."""
+    bev_size: int = 480
 
 
 class MultiLiveSession:
@@ -263,11 +267,18 @@ class MultiLiveSession:
         config: MultiLiveConfig | None = None,
         fusion_config: FusionConfig | None = None,
         shadow: ShadowProbe | None = None,
+        metric: bool = False,
     ) -> None:
         self.backend = backend
         self.rig = rig
         self.config = config or MultiLiveConfig()
-        self.manager = GlobalIDManager(rig, fusion_config or appearance_only_fusion_config())
+        self.metric = metric
+        """True only when the cameras share a real floor plane. Gates the BEV
+        panel and every metric claim, exactly as on the single-camera path."""
+        default_config = (
+            FusionConfig() if metric else appearance_only_fusion_config()
+        )
+        self.manager = GlobalIDManager(rig, fusion_config or default_config)
         self.shadow = shadow
         self.timeline = IdentityTimeline()
         self.ledger = CrossViewLedger()
@@ -279,6 +290,16 @@ class MultiLiveSession:
         self.frames_by_camera: dict[str, int] = dict.fromkeys(rig.camera_ids, 0)
         """How many steps each camera actually contributed a frame to. A camera
         whose count stalls is unplugged, not empty."""
+        self._bev: Any | None = None
+        if self.metric and self.config.show_bev:
+            from mcreid.viz.bev import BevRenderer
+
+            self._bev = BevRenderer(
+                rig,
+                canvas_size=(self.config.bev_size, self.config.bev_size),
+                grid_step_m=1.0,
+                trail_length=45,
+            )
 
     # --- metrics ----------------------------------------------------------
 
@@ -379,7 +400,23 @@ class MultiLiveSession:
             )
             tiles.append(tile)
         mosaic = self._mosaic(tiles)
+        if self._bev is not None:
+            mosaic = self._attach_bev(mosaic, snapshots)
         return self._draw_banner(mosaic, snapshots, now)
+
+    def _attach_bev(self, canvas: Image, snapshots: Sequence[GlobalTrackSnapshot]) -> Image:
+        assert self._bev is not None
+        panel = self._bev.render(list(snapshots), self.frame_index)
+        # Scaled to the mosaic's height, keeping the plan's aspect ratio: a
+        # metric map stretched to fit is worse than no map, which is a bug this
+        # project already shipped once in the HPC demo.
+        scale = canvas.shape[0] / panel.shape[0]
+        resized = cv2.resize(
+            panel,
+            (max(int(panel.shape[1] * scale), 1), canvas.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+        return np.asarray(np.hstack([canvas, np.asarray(resized, dtype=np.uint8)]), dtype=np.uint8)
 
     def _annotate(
         self,
@@ -481,7 +518,9 @@ class MultiLiveSession:
             parts.append(f"cross-view seen: {self.ledger.multi_camera_ids}")
         if self.manager.dormant.n_resurrected:
             parts.append(f"resurrections {self.manager.dormant.n_resurrected}")
-        parts.append("uncalibrated / appearance-only (no BEV)")
+        parts.append(
+            "calibrated / metric" if self.metric else "uncalibrated / appearance-only (no BEV)"
+        )
 
         strip = np.full((40, canvas.shape[1], 3), 18, dtype=np.uint8)
         text = "   |   ".join(parts)
