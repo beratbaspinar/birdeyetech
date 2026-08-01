@@ -123,10 +123,20 @@ def build_specs(
 
 
 def _fourcc_of(capture: cv2.VideoCapture) -> str:
+    """The negotiated pixel format, or '?' when the device does not report one.
+
+    Non-printable bytes are dropped rather than emitted. A device that reports a
+    partial FOURCC puts NUL bytes in this string, and printing those turns the
+    whole run's stdout into a binary stream — which is how this was found: `grep`
+    refused to read the probe's own output.
+    """
     raw = int(capture.get(cv2.CAP_PROP_FOURCC))
     if raw <= 0:
         return "?"
-    return "".join(chr((raw >> (8 * i)) & 0xFF) for i in range(4))
+    text = "".join(
+        chr(byte) for i in range(4) if (byte := (raw >> (8 * i)) & 0xFF) >= 0x20
+    )
+    return text or "?"
 
 
 def _open(index: int, backend: str, width: int, height: int) -> cv2.VideoCapture | None:

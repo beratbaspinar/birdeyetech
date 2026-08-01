@@ -427,3 +427,24 @@ def test_duplicate_device_indices_are_refused():
     assert parse_devices("0, 1") == [0, 1]
     with pytest.raises(typer.BadParameter, match="duplicate device index"):
         parse_devices("0,0")
+
+
+def test_a_partial_fourcc_never_puts_nul_bytes_on_stdout():
+    """Found by grep refusing to read the probe's own output: a device that
+    reports a partial FOURCC yields NUL bytes, and printing those turns the
+    whole run's stdout into a binary stream."""
+    from mcreid.cli.live_multi import _fourcc_of
+
+    class _Capture:
+        def __init__(self, raw: int) -> None:
+            self.raw = raw
+
+        def get(self, prop: int) -> float:
+            return float(self.raw)
+
+    # 'YUY2' little-endian, and a value whose upper bytes are zero.
+    assert _fourcc_of(_Capture(0x32595559)) == "YUY2"
+    partial = _fourcc_of(_Capture(0x00005559))
+    assert "\x00" not in partial and partial == "YU"
+    assert _fourcc_of(_Capture(0)) == "?"
+    assert _fourcc_of(_Capture(-1)) == "?"
