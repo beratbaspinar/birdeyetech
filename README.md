@@ -419,18 +419,32 @@ stable.
 ### Live webcams — two or more cameras, still no calibration
 
 Probe first. Which capture backend a device negotiates is not cosmetic: on the
-development rig one USB camera reads **5.0 FPS through DirectShow and 14.9
+development rig one USB camera reads **14.6 FPS through DirectShow and 30.4
 through Media Foundation**, at 640x480, 320x240 *and* 160x120 — so it is the
 media type each backend picks, not bandwidth. `probe` measures every device on
 every backend, alone and all together, and prints the run command to copy.
+
+Aim the cameras before believing any absolute number from them. An earlier
+revision of this section reported 5.0 / 14.9 FPS for the same camera and called
+15 FPS a hardware ceiling. It was not: the camera was pointed at ceiling lights,
+saturated (mean luma 248), and its auto-exposure had roughly halved *both*
+backends. Aimed at the room (luma 117) both roughly double. The backend gap is
+real and reproducible; the ceiling was an artefact of where it was pointing.
 
 ```bash
 uv run mcreid-live-multi probe
 ```
 
 ```bash
-uv run mcreid-live-multi run --devices 0,1 --backend msmf --nominal-fps 30,15
+uv run mcreid-live-multi run --devices 0,1 --backend msmf
 ```
+
+`--nominal-fps` defaults to `auto`, which measures each camera's real rate from
+its first 20 frames and writes that into the container header. Declaring it is
+the trap the paragraph above describes: a session recorded as 15 FPS from a
+camera actually delivering 30 plays back at half speed, and nothing in the file
+says so. The per-frame timestamp CSV is authoritative either way, but a video
+that needs a sidecar to play correctly is one most people will play wrongly.
 
 One shared detector and one shared embedder serve every camera. Cameras of the
 **same** resolution are batched into one `predict` call; different resolutions
@@ -488,12 +502,40 @@ anything time-based, because a camera that delivers 15 FPS into a 30 FPS
 container header plays back at twice life speed (the run warns when it detects
 this).
 
-Measured on an RTX 4060 Laptop, 1280x720 + 640x480: **30.8 FPS end-to-end on an
-empty room, 22.3 FPS with one person in frame.** Detection costs 12.5 ms for one
+Measured on an RTX 4060 Laptop: **30.8 FPS end-to-end on an empty room and
+17–22 FPS with one person in frame** across two 1280x720 + 640x480 cameras, and
+**16.9 FPS across three streams**. Detection costs 12.5 ms for one
 view and 22.5 ms for two; batching the embedder across views is close to free
 (15.5 ms for one crop, 15.7 ms for two from different cameras). Models are
 warmed before the loop — skipping that puts a **5.4 s** first-frame stall
 exactly where someone walks in, and averages it into the reported frame rate.
+
+Scaling to three streams costs less than linearly: **16.9 FPS end-to-end on 3
+cameras** against 17–22 on 2, because detection batches by frame shape and the
+embedder batches across every view. A 2.3 s total-occlusion gap was survived on
+the 3-camera run with the identity held.
+
+**Known defect, filed not fixed — a return during the retirement window never
+probes the gallery.** An identity that stops being measured takes **301 frames
+(10.0 s at 30 FPS)** to retire into the dormant gallery. Come back inside that
+window and the identity is still `LOST`, so the long-gap path has nothing to
+look at; `_revive` is the only mechanism available and its 0.48 gate rejects the
+truncated crop a person entering frame produces. A new identity is minted and
+confirms in 5 frames, and by the time the original lands in the gallery ~47
+frames later the adoption window (`hits in [2, n_init)`, three frames wide) has
+closed and the new track holds every observation, so no leftover cluster ever
+forms. On the live run the appearance evidence was fine the whole time — first
+clean match at f+55, distance 0.267 against a 0.42 gate — and nothing queried
+it. Reproduced with a control in `tests/test_live_multi.py`; the control returns
+*after* retirement and does probe, which is what makes this an ordering defect
+rather than a threshold one. Every candidate fix touches identity assignment,
+which this project only changes against measurement, so it is filed for its own
+session rather than patched here.
+
+Note for anyone reading the older session notes: the retirement latency is
+**301** frames, not the `max_coast + reid_window` = 390 they state.
+`reid_window_frames` counts from the last measurement, so it overlaps the coast
+window instead of following it.
 
 ### Your own cameras — multi-camera rig
 

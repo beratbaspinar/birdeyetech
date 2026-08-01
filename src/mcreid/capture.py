@@ -48,11 +48,18 @@ Image = npt.NDArray[np.uint8]
 MP4V_BYTES_PER_PIXEL_FRAME = 0.030
 
 # Windows capture backends, by name. MSMF is the default on measured evidence,
-# not on preference: on this rig's Microsoft LifeCam VX-2000, DSHOW negotiates a
-# 5.0 FPS media type and MSMF negotiates 14.9 — at every resolution tried,
-# including 160x120, so it is a negotiation difference and not bandwidth. The
-# integrated camera is 30 FPS on either. Both cameras hold full rate together
-# under MSMF. DSHOW is kept because some devices only enumerate there.
+# not on preference: on this rig's Microsoft LifeCam VX-2000, MSMF delivers
+# 30.4 FPS and DSHOW 14.6 — a ~2x gap at every resolution tried, including
+# 160x120, so it is which media type each backend negotiates and not bandwidth.
+# The integrated camera is 30 FPS on either, and both cameras hold full rate
+# together under MSMF. DSHOW is kept because some devices only enumerate there.
+#
+# BEWARE THE OTHER VARIABLE. An earlier measurement of this same camera read
+# 15.1 (MSMF) and 5.0 (DSHOW) and was written up as a hardware ceiling. It was
+# not: the camera was pointed at ceiling lights, saturated (mean luma 248), and
+# its auto-exposure had roughly halved BOTH backends. Aimed at the room (luma
+# 117) both roughly double. The backend gap is real and reproducible; any
+# absolute FPS figure for this camera is only valid with the scene stated.
 CAPTURE_BACKENDS: dict[str, int] = {
     "msmf": cv2.CAP_MSMF,
     "dshow": cv2.CAP_DSHOW,
@@ -87,9 +94,13 @@ class CameraSpec:
     fourcc: str = "MJPG"
     """Requested pixel format. Ignored by cameras that only offer YUY2 — the
     negotiated format is reported at open time, never assumed."""
-    nominal_fps: float = 30.0
-    """Rate written into the recording's container header. The *real* rate is in
-    the timestamp CSV; this only decides default playback speed."""
+    nominal_fps: float | None = 30.0
+    """Container-header rate, or None to MEASURE it from the first frames.
+
+    None is the better default for an unfamiliar camera and is what the CLI
+    passes for `--nominal-fps auto`. The timestamp CSV is authoritative either
+    way, but a video that needs a sidecar to play at the right speed is one most
+    people will play at the wrong speed."""
     backend: str = DEFAULT_BACKEND
     """Capture backend by name. Per camera, because two devices on one machine
     do not necessarily negotiate their best mode on the same one."""
@@ -101,7 +112,7 @@ class CameraSpec:
             raise ValueError(f"device index must be >= 0, got {self.device}")
         if self.width <= 0 or self.height <= 0:
             raise ValueError(f"invalid requested size {self.width}x{self.height}")
-        if self.nominal_fps <= 0:
+        if self.nominal_fps is not None and self.nominal_fps <= 0:
             raise ValueError(f"nominal_fps must be positive, got {self.nominal_fps}")
         if len(self.fourcc) != 4:
             raise ValueError(f"fourcc must be 4 characters, got {self.fourcc!r}")
@@ -126,8 +137,10 @@ class CapturedFrame:
 
 def estimated_bytes_per_second(specs: Sequence[CameraSpec]) -> float:
     """Disk rate the raw recordings will consume, all cameras together."""
+    # An unmeasured camera is budgeted at 30 fps: the estimate exists to refuse
+    # a session that would not fit, so guessing high is the safe direction.
     return sum(
-        spec.width * spec.height * spec.nominal_fps * MP4V_BYTES_PER_PIXEL_FRAME
+        spec.width * spec.height * (spec.nominal_fps or 30.0) * MP4V_BYTES_PER_PIXEL_FRAME
         for spec in specs
     )
 
@@ -157,19 +170,66 @@ class StreamRecorder:
     720p to VGA would otherwise produce a video whose header lies about it.
     """
 
-    def __init__(self, video_path: Path, timestamps_path: Path, fps: float) -> None:
-        if fps <= 0:
+    def __init__(
+        self,
+        video_path: Path,
+        timestamps_path: Path,
+        fps: float | None = None,
+        calibration_frames: int = 20,
+    ) -> None:
+        """`fps=None` measures the real rate from the first `calibration_frames`.
+
+        Measuring beats declaring, because a declared rate is wrong exactly when
+        it matters. This rig's USB camera was believed to top out at 15 FPS and
+        actually delivers 30 under Media Foundation, so a session recorded with
+        `--nominal-fps 15` plays back at half speed with nothing in the file
+        saying so. The timestamp CSV was always authoritative, but a video that
+        needs a sidecar to play correctly is a video most people will play
+        wrongly.
+
+        The calibration frames are held in memory and flushed once the rate is
+        known, so nothing is dropped: 20 frames of 720p is ~55 MB, transient,
+        and one camera at a time.
+        """
+        if fps is not None and fps <= 0:
             raise ValueError(f"fps must be positive, got {fps}")
+        if calibration_frames < 2:
+            raise ValueError("need at least 2 frames to measure a rate")
         self.video_path = Path(video_path)
         self.timestamps_path = Path(timestamps_path)
         self.fps = fps
+        self.declared_fps = fps
+        """What the caller asked for, or None. `fps` becomes the measured rate."""
+        self.calibration_frames = calibration_frames
         self.n_written = 0
         self._writer: Any = None
         self._csv: Any = None
         self._csv_writer: Any = None
         self._size: tuple[int, int] | None = None
+        self._pending: list[CapturedFrame] = []
+
+    def _measure(self, frames: list[CapturedFrame]) -> float:
+        """Rate from the MEDIAN inter-frame interval, not the endpoint span.
+
+        The first frames out of a freshly opened camera arrive faster than the
+        steady state — they were already buffered — so a span estimate reads
+        high. Measured on this rig: 33.2 fps from the span against a 27.0 fps
+        session mean. The median ignores that head, and one stalled frame with
+        it, at no extra memory.
+        """
+        intervals = [
+            b.t_capture - a.t_capture
+            # strict=False is the point: pairing consecutive frames means the
+            # second sequence is deliberately one shorter.
+            for a, b in zip(frames, frames[1:], strict=False)
+            if b.t_capture > a.t_capture
+        ]
+        if not intervals:
+            return 30.0
+        return 1.0 / float(np.median(intervals))
 
     def _open(self, image: Image) -> None:
+        assert self.fps is not None, "_open called before the rate was known"
         height, width = image.shape[:2]
         self._size = (width, height)
         self.video_path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,7 +246,28 @@ class StreamRecorder:
 
     def write(self, frame: CapturedFrame) -> None:
         if self._writer is None:
+            if self.fps is None:
+                # Hold frames until the rate is known, then flush. Dropping them
+                # instead would silently lose the first second of every session.
+                self._pending.append(frame)
+                if len(self._pending) < self.calibration_frames:
+                    return
+                self.fps = self._measure(self._pending)
+                logger.info(
+                    "measured %.1f fps over %d frames -> %s",
+                    self.fps,
+                    len(self._pending),
+                    self.video_path.name,
+                )
+                buffered, self._pending = self._pending, []
+                self._open(buffered[0].image)
+                for held in buffered:
+                    self._write_open(held)
+                return
             self._open(frame.image)
+        self._write_open(frame)
+
+    def _write_open(self, frame: CapturedFrame) -> None:
         assert self._size is not None and self._writer is not None
         assert self._csv is not None and self._csv_writer is not None
         height, width = frame.image.shape[:2]
@@ -205,6 +286,14 @@ class StreamRecorder:
             self._csv.flush()
 
     def close(self) -> None:
+        # A session shorter than the calibration window still has to produce a
+        # playable file rather than an empty one.
+        if self._writer is None and self._pending:
+            self.fps = self._measure(self._pending) if len(self._pending) > 1 else 30.0
+            buffered, self._pending = self._pending, []
+            self._open(buffered[0].image)
+            for held in buffered:
+                self._write_open(held)
         if self._writer is not None:
             self._writer.release()
             self._writer = None

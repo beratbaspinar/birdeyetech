@@ -28,6 +28,7 @@ from mcreid.capture import (
     CameraRig,
     CameraSpec,
     CameraStream,
+    CapturedFrame,
     StreamRecorder,
     build_rig,
     check_disk_space,
@@ -448,3 +449,119 @@ def test_the_backend_is_per_camera_not_global():
     fast = CameraSpec(camera_id="cam0", device=0, backend="msmf")
     legacy = CameraSpec(camera_id="cam1", device=1, backend="dshow")
     assert (fast.backend, legacy.backend) == ("msmf", "dshow")
+
+
+# --- measured container rate ---------------------------------------------------------------------
+
+
+def test_the_container_rate_is_measured_when_not_declared(tmp_path):
+    """A declared rate is wrong exactly when it matters. This rig's USB camera
+    was believed to top out at 15 FPS and delivers 30, so a session recorded
+    with --nominal-fps 15 plays at half speed with nothing in the file saying
+    so."""
+    recorder = StreamRecorder(
+        tmp_path / "c.mp4", tmp_path / "c.csv", fps=None, calibration_frames=6
+    )
+    start = time.perf_counter()
+    for seq in range(6):
+        recorder.write(
+            CapturedFrame(
+                camera_id="cam0",
+                image=np.full((48, 64, 3), seq, dtype=np.uint8),
+                seq=seq,
+                t_capture=start + seq * 0.05,  # exactly 20 fps
+                t_wall=1.8e9 + seq * 0.05,
+            )
+        )
+    assert recorder.fps == pytest.approx(20.0)
+    assert recorder.declared_fps is None
+    recorder.close()
+    assert recorder.n_written == 6, "the calibration frames must be flushed, not dropped"
+
+
+def test_nothing_is_dropped_while_the_rate_is_being_measured(tmp_path):
+    recorder = StreamRecorder(
+        tmp_path / "c.mp4", tmp_path / "c.csv", fps=None, calibration_frames=10
+    )
+    for seq in range(25):
+        recorder.write(
+            CapturedFrame(
+                camera_id="cam0",
+                image=np.full((48, 64, 3), seq % 255, dtype=np.uint8),
+                seq=seq,
+                t_capture=seq / 30.0,
+                t_wall=1.8e9 + seq / 30.0,
+            )
+        )
+    recorder.close()
+    assert recorder.n_written == 25
+    with (tmp_path / "c.csv").open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [int(r["seq"]) for r in rows] == list(range(25))
+
+
+def test_a_session_shorter_than_the_calibration_window_still_writes_a_file(tmp_path):
+    """Otherwise a 3-frame session produces an empty mp4 and no CSV at all."""
+    recorder = StreamRecorder(
+        tmp_path / "c.mp4", tmp_path / "c.csv", fps=None, calibration_frames=50
+    )
+    for seq in range(3):
+        recorder.write(
+            CapturedFrame(
+                camera_id="cam0",
+                image=np.zeros((48, 64, 3), dtype=np.uint8),
+                seq=seq,
+                t_capture=seq / 30.0,
+                t_wall=1.8e9,
+            )
+        )
+    recorder.close()
+    assert recorder.n_written == 3
+    assert (tmp_path / "c.mp4").stat().st_size > 0
+
+
+def test_a_declared_rate_is_still_honoured(tmp_path):
+    recorder = StreamRecorder(tmp_path / "c.mp4", tmp_path / "c.csv", fps=15.0)
+    recorder.write(
+        CapturedFrame("cam0", np.zeros((48, 64, 3), dtype=np.uint8), 0, 0.0, 1.8e9)
+    )
+    assert recorder.fps == 15.0 and recorder.declared_fps == 15.0
+    recorder.close()
+
+
+def test_auto_rate_specs_are_budgeted_at_30_for_the_disk_check():
+    """The estimate exists to refuse a session that would not fit, so an
+    unmeasured camera must be guessed HIGH, not skipped."""
+    auto = CameraSpec(camera_id="cam0", device=0, width=640, height=480, nominal_fps=None)
+    declared = CameraSpec(camera_id="cam0", device=0, width=640, height=480, nominal_fps=30.0)
+    assert estimated_bytes_per_second([auto]) == estimated_bytes_per_second([declared])
+
+
+def test_the_rate_estimate_ignores_the_fast_head_of_a_freshly_opened_camera(tmp_path):
+    """The first frames out of a camera were already buffered and arrive faster
+    than the steady state. Measured on the real rig, an endpoint-span estimate
+    read 33.2 fps against a 27.0 fps session. The median interval is immune."""
+    recorder = StreamRecorder(
+        tmp_path / "c.mp4", tmp_path / "c.csv", fps=None, calibration_frames=11
+    )
+    # three frames back-to-back, then a steady 20 fps
+    times = [0.0, 0.001, 0.002] + [0.002 + 0.05 * i for i in range(1, 9)]
+    for seq, t in enumerate(times):
+        recorder.write(
+            CapturedFrame("cam0", np.zeros((48, 64, 3), dtype=np.uint8), seq, t, 1.8e9 + t)
+        )
+    assert recorder.fps == pytest.approx(20.0), f"span estimate would give ~{10 / times[-1]:.0f}"
+    recorder.close()
+
+
+def test_a_single_stalled_frame_does_not_move_the_estimate(tmp_path):
+    recorder = StreamRecorder(
+        tmp_path / "c.mp4", tmp_path / "c.csv", fps=None, calibration_frames=11
+    )
+    times = [0.05 * i for i in range(6)] + [1.5] + [1.5 + 0.05 * i for i in range(1, 5)]
+    for seq, t in enumerate(times):
+        recorder.write(
+            CapturedFrame("cam0", np.zeros((48, 64, 3), dtype=np.uint8), seq, t, 1.8e9 + t)
+        )
+    assert recorder.fps == pytest.approx(20.0)
+    recorder.close()

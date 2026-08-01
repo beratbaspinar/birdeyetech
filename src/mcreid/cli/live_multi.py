@@ -104,9 +104,11 @@ def build_specs(
     rates = broadcast(nominal_fps, len(devices), "nominal-fps")
     backends = broadcast(backend, len(devices), "backend")
     try:
-        parsed_rates = [float(rate) for rate in rates]
+        parsed_rates: list[float | None] = [
+            None if rate.lower() == "auto" else float(rate) for rate in rates
+        ]
     except ValueError as exc:
-        raise typer.BadParameter(f"--nominal-fps must be numeric: {exc}") from exc
+        raise typer.BadParameter(f"--nominal-fps must be a number or 'auto': {exc}") from exc
     return [
         CameraSpec(
             camera_id=f"cam{position}",
@@ -202,7 +204,7 @@ def probe(
         help=(
             "Backends to compare, comma-separated. Both by default because they do "
             "not negotiate the same media type: on this rig one USB camera reads "
-            "5.0 FPS on dshow and 14.9 on msmf, at every resolution."
+            "14.6 FPS on dshow and 30.4 on msmf, at every resolution."
         ),
     ),
 ) -> None:
@@ -288,7 +290,7 @@ def probe(
     typer.echo(
         f"  uv run mcreid-live-multi run --devices {','.join(str(i) for i in chosen)}"
         f" --backend {','.join(best[i][0] for i in chosen)}"
-        f" --nominal-fps {','.join(f'{best[i][1]:.0f}' for i in chosen)}"
+        " --nominal-fps auto"
     )
     specs = build_specs(
         chosen,
@@ -320,20 +322,21 @@ def run(
         ),
     ),
     nominal_fps: str = typer.Option(
-        "30",
+        "auto",
         help=(
-            "Rate written into the recordings' container header, and the basis of "
-            "the disk estimate. One value for all cameras, or one per camera "
-            "('30,15'). Real per-frame times always go to the timestamp CSV — set "
-            "this from `probe` so playback speed is roughly right too."
+            "Container-header rate for the recordings. 'auto' (default) MEASURES it "
+            "from the first 20 frames of each camera, which is what you want unless "
+            "you have a reason: a declared rate is wrong exactly when it matters, and "
+            "a 15-in-a-30-header recording plays at half speed with nothing in the "
+            "file saying so. One value for all cameras, or one per camera ('30,15')."
         ),
     ),
     backend: str = typer.Option(
         DEFAULT_BACKEND,
         help=(
             "Capture backend, one value or one per camera. Default msmf on measured "
-            "evidence: this rig's USB camera negotiates 5.0 FPS on dshow and 14.9 on "
-            "msmf. Run `probe` to check yours."
+            "evidence: this rig's USB camera reads 14.6 FPS on dshow and 30.4 on msmf. "
+            "Run `probe` to check yours."
         ),
     ),
     weights: Path = typer.Option(
@@ -577,18 +580,17 @@ def run(
             f"{session.frames_by_camera.get(stream.spec.camera_id, 0)} fused, "
             f"{recorded} recorded"
         )
-        # A header claiming 30 fps on a 5 fps recording plays back 6x fast, and
-        # nothing about the file says so. The CSV is authoritative either way,
-        # but silence here would let the mp4 be trusted.
-        if recorded and abs(stats.measured_fps - stream.spec.nominal_fps) > (
-            0.2 * stream.spec.nominal_fps
-        ):
+        # A header claiming 30 fps on a 15 fps recording plays back at double
+        # speed and nothing in the file says so. The CSV is authoritative either
+        # way, but silence here would let the mp4 be trusted.
+        header_fps = stream.recorder.fps if stream.recorder is not None else None
+        if recorded and header_fps and abs(stats.measured_fps - header_fps) > 0.2 * header_fps:
             typer.secho(
-                f"    NOTE: recorded at a nominal {stream.spec.nominal_fps:.0f} fps but "
-                f"captured at {stats.measured_fps:.1f} — the mp4 plays back "
-                f"{stream.spec.nominal_fps / max(stats.measured_fps, 1e-6):.1f}x off. Use "
-                f"the timestamp CSV for anything time-based, or re-run with "
-                f"--nominal-fps {stats.measured_fps:.0f}.",
+                f"    NOTE: header says {header_fps:.0f} fps, captured at "
+                f"{stats.measured_fps:.1f} — the mp4 plays back "
+                f"{header_fps / max(stats.measured_fps, 1e-6):.1f}x off. Use the "
+                f"timestamp CSV for anything time-based, or re-run with "
+                f"--nominal-fps auto.",
                 fg=typer.colors.YELLOW,
             )
     if not no_record:
