@@ -39,6 +39,7 @@ from mcreid.cli.live import resolve_fusion_config
 from mcreid.diagnostics.shadow import ShadowProbe, summarise
 from mcreid.fusion.global_id import FusionConfig
 from mcreid.live_multi import (
+    SINGLE_OCCUPANT_WARNING,
     MultiLiveConfig,
     MultiLiveSession,
     appearance_only_fusion_config,
@@ -345,14 +346,16 @@ def run(
     span_m: float = typer.Option(
         6.0, help="Assumed floor span of the frame height in the pixel-plane stand-in."
     ),
-    appearance_only: bool = typer.Option(
-        True,
+    occupancy: str = typer.Option(
+        "single",
         help=(
-            "Open every geometric gate, so identity rests on appearance alone. ON by "
-            "default and correct for an uncalibrated rig: two cameras without a shared "
-            "homography have unrelated 'world' coordinates, so a geometric gate is not "
-            "uninformative but wrong. Turn OFF only to measure what the geometry-gated "
-            "path does on nonsense positions."
+            "How many people will be in view. This is an ASSERTION ABOUT THE ROOM, "
+            "not a preference, and it decides whether cross-view fusion runs at all. "
+            "'single': geometry abstains between cameras so appearance can fuse the "
+            "two views — measured to fuse two DIFFERENT people 76.7% of the time, so "
+            "it is only valid when you are alone. 'multi': shipped geometry-gated "
+            "config; strangers are safe and cross-view fusion will NOT work on an "
+            "uncalibrated rig (measured 0% of genuine cross-view pairs fuse)."
         ),
     ),
     dormant_gate: float = typer.Option(
@@ -448,21 +451,27 @@ def run(
             note = "" if (actual_w, actual_h) == (width, height) else "  (DOWNGRADED)"
             typer.echo(f"  {camera_id}: {actual_w}x{actual_h}{note}")
 
+        if occupancy not in {"single", "multi"}:
+            raise typer.BadParameter(f"--occupancy must be 'single' or 'multi', got {occupancy!r}")
         rig = uncalibrated_rig(sizes, span_m)
         flag_config = resolve_fusion_config(dormant_gate, single_occupant)
+        appearance_only = occupancy == "single"
         fusion_config = (
             appearance_only_fusion_config(flag_config)
             if appearance_only
             else (flag_config or FusionConfig())
         )
-        typer.echo(
-            "uncalibrated rig: no shared floor plane, no BEV, no metric claim. "
-            + (
-                "Fusion is APPEARANCE-ONLY (every geometric gate opened)."
-                if appearance_only
-                else "Geometric gates ACTIVE on pixel-plane coordinates — diagnostic only."
+        typer.echo("uncalibrated rig: no shared floor plane, no BEV, no metric claim.")
+        if appearance_only:
+            typer.secho(f"--occupancy single: {SINGLE_OCCUPANT_WARNING}", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(
+                "--occupancy multi: geometric gates stay ACTIVE on pixel-plane "
+                "coordinates that two cameras do not share. Strangers are safe; "
+                "cross-view fusion will not happen. Measured on real crops: 0% of "
+                "genuine cross-view pairs fuse under this config.",
+                fg=typer.colors.YELLOW,
             )
-        )
         if single_occupant:
             typer.echo("single-occupant mode: dormant duplicate suppression + scoped retry on.")
         if dormant_gate is not None:
@@ -594,6 +603,13 @@ def run(
     typer.echo("cross-view ledger — the acceptance evidence:")
     for line in session.cross_view_report():
         typer.echo(line)
+    if occupancy == "single" and len(session.ledger.multi_camera_ids) >= 1:
+        typer.secho(
+            "    read this only as a SINGLE-OCCUPANT result: a CROSS-VIEW verdict is "
+            "produced by two different people 76.7% of the time under this config, so "
+            "it is evidence only if you were alone.",
+            fg=typer.colors.YELLOW,
+        )
     if session.timeline.reacquired_gap:
         gid, gap = max(session.timeline.reacquired_gap.items(), key=lambda kv: kv[1])
         typer.echo(f"longest gap survived: ID {gid} reacquired after {gap:.1f} s")

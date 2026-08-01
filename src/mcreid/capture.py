@@ -60,6 +60,14 @@ CAPTURE_BACKENDS: dict[str, int] = {
 }
 DEFAULT_BACKEND = "msmf"
 
+# Consecutive failed reads before a stream is declared dead. The previous guard
+# required `frames_read == 0` as well, so it could only ever fire BEFORE the
+# first successful frame: a camera unplugged mid-session busy-spun forever and
+# `raise_for_errors()` never raised. `frames_failed` is cumulative and a camera
+# may drop the odd frame legitimately, so the counter that matters is the run of
+# failures since the last success.
+MAX_CONSECUTIVE_FAILURES = 30
+
 
 class VideoCaptureLike(Protocol):
     """The slice of `cv2.VideoCapture` this module uses."""
@@ -302,16 +310,25 @@ class CameraStream:
     def _pump(self) -> None:
         assert self._capture is not None
         seq = 0
+        consecutive = 0
         try:
             while not self._stop.is_set():
                 ok, image = self._capture.read()
                 if not ok or image is None:
                     self.stats.frames_failed += 1
-                    if self.stats.frames_failed > 30 and self.stats.frames_read == 0:
+                    consecutive += 1
+                    if consecutive > MAX_CONSECUTIVE_FAILURES:
                         raise RuntimeError(
-                            f"{self.spec.camera_id}: 30 consecutive failed reads"
+                            f"{self.spec.camera_id}: {consecutive} consecutive failed "
+                            "reads — the camera is gone"
                         )
+                    # Without this a failing read() returns instantly and the
+                    # loop spins a whole core. Measured on an unplug: 6.5 MILLION
+                    # failed reads in one second, on the machine whose deliverable
+                    # is >=15 FPS from a GPU pipeline on the same CPU.
+                    time.sleep(0.01)
                     continue
+                consecutive = 0
                 now = time.perf_counter()
                 frame = CapturedFrame(
                     camera_id=self.spec.camera_id,

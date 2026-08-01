@@ -136,16 +136,35 @@ def _run(
 # --- the appearance-only fusion profile --------------------------------------------------------
 
 
-def test_every_geometric_gate_is_opened():
-    config = appearance_only_fusion_config()
+def test_geometry_is_suspended_by_a_scoped_flag_not_by_opening_every_radius():
+    """The first version set every radius to 1e4 and was REJECTED for it: that
+    removes the single-camera motion gate, which is sound, along with the
+    cross-camera one, which is not. Measured cost of the global version on real
+    crops: 63% same-camera identity theft, 0% for both the shipped config and
+    this one."""
+    base, config = FusionConfig(), appearance_only_fusion_config()
+    assert config.cross_camera_geometry_open is True
     assert config.association.weight_geometry == 0.0
     assert config.association.weight_appearance == 1.0
-    assert config.association.chi2_gate == GEOMETRY_FREE_M
-    assert config.association.max_distance_m == GEOMETRY_FREE_M
+    # Every radius that the rejected version opened globally stays SHIPPED.
+    assert config.association.chi2_gate == base.association.chi2_gate
+    assert config.association.max_distance_m == base.association.max_distance_m
+    assert config.merge_radius_m == base.merge_radius_m
+    assert config.revive_max_reach_m == base.revive_max_reach_m
+    assert config.revive_speed_margin_m == base.revive_speed_margin_m
+    # `_cluster` is the one path safe to open, because it already refuses two
+    # observations from the SAME camera, so its radius only widens cross-camera.
     assert config.birth_cluster_radius_m == GEOMETRY_FREE_M
-    assert config.merge_radius_m == GEOMETRY_FREE_M
-    assert config.revive_max_reach_m == GEOMETRY_FREE_M
-    assert config.revive_speed_margin_m == GEOMETRY_FREE_M
+
+
+def test_the_sentinel_is_never_applied_to_a_gate_in_squared_units():
+    """1e4 clears the ~12.2 pseudo-metre max separation by ~800x as a DISTANCE.
+    Assigned to chi2_gate it compares a SQUARED Mahalanobis distance, where the
+    margin measured 1.69x and inverted above span_m ~ 8 — the 'opened' gate
+    started rejecting the cross-corner pairs it existed to accept."""
+    config = appearance_only_fusion_config()
+    assert config.association.chi2_gate != GEOMETRY_FREE_M
+    assert config.association.max_distance_m != GEOMETRY_FREE_M
 
 
 def test_the_measured_appearance_gates_are_left_alone():
@@ -184,11 +203,19 @@ def test_max_cost_is_raised_or_the_appearance_gate_silently_tightens():
     assert just_outside[0, 0] == INFEASIBLE
 
 
-def test_geometry_cannot_reject_however_far_apart_the_pixel_planes_put_things():
+def test_geometry_cannot_reject_across_cameras_however_far_apart_they_land():
+    """Now a property of the manager, not of the raw cost matrix: the gate still
+    exists at its shipped value and is bypassed per pair, so it must be tested
+    where the bypass lives."""
+    from mcreid.fusion.global_id import GlobalIDManager
+
+    manager = GlobalIDManager(uncalibrated_rig(SIZES), appearance_only_fusion_config())
+    assert manager._geometry_abstains("cam0", {"cam1"})
+    # ...and is NOT bypassed within one camera, whatever the separation.
+    assert not manager._geometry_abstains("cam0", {"cam0"})
     config = appearance_only_fusion_config().association
-    huge = np.full((1, 1), 1000.0)  # 1 km apart in pseudo-metres
-    cost = build_cost_matrix(huge, huge, np.zeros((1, 1)), config)
-    assert cost[0, 0] < INFEASIBLE
+    huge = np.full((1, 1), 1000.0)
+    assert build_cost_matrix(huge, huge, np.zeros((1, 1)), config)[0, 0] == INFEASIBLE
 
 
 # --- the uncalibrated rig ----------------------------------------------------------------------
@@ -257,14 +284,27 @@ def test_fusion_holds_up_to_the_association_gate_including_the_measured_operatin
 def test_a_stranger_in_the_second_view_is_not_fused_into_the_first():
     """Opening the geometric gates must not make appearance permissive too.
 
-    cam1 shows someone 0.9 cosine distance away — far past every gate. If the
-    profile fused them, it would be fusing on nothing at all.
+    0.70, not 0.90. Over 105,869 real different-person cross-camera pairs the
+    MAXIMUM observed distance is 0.845 and p99 is 0.776, so a 0.90 "stranger"
+    is a person who does not exist and the test was unfalsifiable. 0.70 sits
+    inside the real distribution, above p95.
     """
-    backend = _TwoCameraBackend(cross_camera_distance=0.9)
-    session = _session(backend)
+    session = _session(_TwoCameraBackend(cross_camera_distance=0.70))
     _run(session, steps=12)
     assert not session.ledger.multi_camera_ids
     assert len(session.reported_ids) == 2
+
+
+def test_the_easy_stranger_is_not_what_the_rig_actually_faces():
+    """Guards the fixture above against drifting back to a comfortable number.
+
+    The real different-person cross-camera mean is 0.623 and 20% of real
+    strangers fall INSIDE the 0.56 association gate. That 20% is not defended
+    by any threshold here — it is why the profile is single-occupant-only — and
+    a test asserting otherwise would be claiming a property the measurement
+    denies.
+    """
+    assert 0.623 < 0.70 < 0.845, "stranger fixture must sit inside the real range"
 
 
 def test_the_boundary_is_the_association_gate_and_not_something_looser():
@@ -517,3 +557,124 @@ def test_shadow_rows_carry_both_query_kinds_on_the_multi_camera_path():
     _run(session, steps=520)
     sources = {row.source for row in shadow.rows}
     assert sources == {QUERY_OBS, QUERY_TRACK_EMA}
+
+
+
+# --- the regime the review found untested: more than one person -------------------------------
+
+
+class _TwoPeopleBackend:
+    """One person per camera — the case the whole profile is unsafe in."""
+
+    def __init__(self, between_people: float) -> None:
+        first = _unit(3)
+        self.embeddings = {"cam0": first, "cam1": _at_distance(first, between_people)}
+        self.boxes = {
+            "cam0": np.array([80.0, 120.0, 190.0, 520.0]),
+            "cam1": np.array([430.0, 60.0, 540.0, 400.0]),
+        }
+
+    def step(self, frames, frame: int) -> list[ViewObservation]:
+        return [
+            ViewObservation(
+                camera_id=camera_id,
+                frame=frame,
+                local_track_id=index + 1,
+                bbox_xyxy=self.boxes[camera_id],
+                embedding=self.embeddings[camera_id],
+                score=0.9,
+            )
+            for index, camera_id in enumerate(("cam0", "cam1"))
+            if camera_id in frames
+        ]
+
+
+def test_two_people_one_per_camera_are_kept_apart_at_the_measured_mean():
+    """The deliverable's own untested regime. 0.623 is the measured
+    different-person cross-camera mean on real WILDTRACK crops."""
+    session = _session(_TwoPeopleBackend(between_people=0.623))
+    _run(session, steps=30)
+    assert len(session.reported_ids) == 2, "two people collapsed into one identity"
+    assert not session.ledger.multi_camera_ids
+
+
+def test_the_profile_is_documented_as_unsafe_for_two_people():
+    """This is the honest half. At the measured mean the synthetic case above
+    holds, but on REAL crops the merge tests EMA-to-EMA vectors whose
+    different-person mean is 0.456 — inside the strict 0.48 gate — and two
+    people fuse 76.7% of the time. No threshold in this file fixes that, so the
+    constraint is carried as a stated precondition instead of a silent one."""
+    from mcreid.live_multi import SINGLE_OCCUPANT_WARNING
+
+    assert "ONE occupant" in SINGLE_OCCUPANT_WARNING
+    assert "76.7%" in SINGLE_OCCUPANT_WARNING
+    assert "0.48 gate" in SINGLE_OCCUPANT_WARNING
+
+
+# --- geometry abstains between cameras, and ONLY between cameras ------------------------------
+
+
+class _SameCameraStrangerBackend:
+    """An identity coasts out of cam0; a DIFFERENT person walks into cam0.
+
+    The attack that broke the first version of this profile. No second camera is
+    involved: opening the radii globally removed the single-camera motion gate,
+    which is sound evidence, to repair the cross-camera one, which is not.
+    """
+
+    def __init__(self, present: int = 12, gap: int = 20) -> None:
+        self.person = _unit(3)
+        self.stranger = _at_distance(self.person, 0.623)
+        self.present, self.gap = present, gap
+
+    def step(self, frames, frame: int) -> list[ViewObservation]:
+        if frame < self.present:
+            box, emb, tid = np.array([100.0, 200.0, 200.0, 600.0]), self.person, 1
+        elif frame < self.present + self.gap:
+            return []
+        else:
+            box, emb, tid = np.array([1000.0, 200.0, 1100.0, 600.0]), self.stranger, 2
+        return [
+            ViewObservation(
+                camera_id="cam0", frame=frame, local_track_id=tid,
+                bbox_xyxy=box, embedding=emb, score=0.9,
+            )
+        ]
+
+
+def test_a_stranger_does_not_inherit_an_identity_inside_one_camera():
+    """Measured on real crops: 63% theft when the radii were opened globally,
+    0% with the exemption scoped to cross-camera pairs, 0% shipped."""
+    session = _session(_SameCameraStrangerBackend())
+    _run(session, steps=45)
+    assert len(session.reported_ids) == 2, (
+        f"the stranger took the identity: {session.reported_ids}"
+    )
+
+
+def test_geometry_abstains_only_between_different_single_camera_planes():
+    """The rule, stated directly. An estimate fed by two cameras lives in
+    neither plane, so geometry abstains on it too — keying on whether camera
+    HISTORIES overlap instead re-enabled the gate on exactly those blended
+    estimates, and blocked genuine merges at 0.27 appearance distance."""
+    from mcreid.fusion.global_id import GlobalIDManager
+
+    manager = GlobalIDManager(uncalibrated_rig(SIZES), appearance_only_fusion_config())
+    assert manager._pixel_plane(["cam0"]) == "cam0"
+    assert manager._pixel_plane(["cam0", "cam1"]) is None
+    assert manager._pixel_plane([]) is None
+    # `_dormant` is a pseudo-camera from gallery seeding, not a sensor.
+    assert manager._pixel_plane(["cam0", "_dormant"]) == "cam0"
+
+    assert not manager._geometry_abstains("cam0", {"cam0"})
+    assert manager._geometry_abstains("cam0", {"cam1"})
+    assert manager._geometry_abstains("cam0", {"cam0", "cam1"})
+
+
+def test_the_shipped_config_never_abstains():
+    """The WILDTRACK path has a real homography and must be untouched."""
+    from mcreid.fusion.global_id import FusionConfig, GlobalIDManager
+
+    manager = GlobalIDManager(uncalibrated_rig(SIZES), FusionConfig())
+    assert not manager._geometry_abstains("cam0", {"cam1"})
+    assert not FusionConfig().cross_camera_geometry_open

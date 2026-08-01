@@ -156,11 +156,55 @@ def test_one_tracker_per_camera_and_one_model_for_all_of_them():
 # --- batching ----------------------------------------------------------------------------------
 
 
-def test_two_cameras_cost_one_detector_call_not_two():
+def test_two_same_sized_cameras_cost_one_detector_call_not_two():
     backend = _backend()
     backend.step({"cam0": _frame(30), "cam1": _frame(60)}, frame=0)
     assert backend.detector.calls == 1
     assert backend.detector.batch_sizes == [2]
+
+
+def test_different_resolutions_are_batched_separately():
+    """Ultralytics letterboxes a batch to one shape, so mixing 16:9 with 4:3
+    changes how the 16:9 view is scaled. Measured with real YOLO11s at imgsz 960
+    on this rig's actual pair (1280x720 + 640x480): cam0 alone produced 16 boxes
+    at mean confidence 0.491; the same frame inside a mixed batch produced 23 —
+    the original 16 plus 7 new low-confidence detections. A same-resolution
+    batch reproduced the solo result exactly. That is a different detector
+    operating point, not a speedup."""
+    backend = _backend()
+    backend.step({"cam0": _frame(30, size=(120, 160)), "cam1": _frame(60, size=(48, 64))}, frame=0)
+    assert backend.detector.batch_sizes == [1, 1]
+
+
+def test_three_cameras_two_of_one_size_batch_by_shape():
+    backend = _backend(camera_ids=("cam0", "cam1", "cam2"))
+    backend.step(
+        {
+            "cam0": _frame(30, size=(120, 160)),
+            "cam1": _frame(60, size=(48, 64)),
+            "cam2": _frame(90, size=(120, 160)),
+        },
+        frame=0,
+    )
+    assert sorted(backend.detector.batch_sizes) == [1, 2]
+
+
+def test_shape_grouping_still_returns_results_in_camera_order():
+    """The reordering hazard the grouping introduces: results come back per
+    group and must be scattered to the right camera, not concatenated."""
+    backend = _backend(camera_ids=("cam0", "cam1", "cam2"))
+    observations = _run(
+        backend,
+        {
+            "cam0": _frame(30, size=(120, 160)),
+            "cam1": _frame(60, size=(48, 64)),
+            "cam2": _frame(90, size=(120, 160)),
+        },
+    )
+    by_camera = {o.camera_id: o for o in observations}
+    assert by_camera["cam0"].bbox_xyxy[0] == pytest.approx(30.0)
+    assert by_camera["cam1"].bbox_xyxy[0] == pytest.approx(60.0)
+    assert by_camera["cam2"].bbox_xyxy[0] == pytest.approx(90.0)
 
 
 def test_a_batching_embedder_is_called_once_for_all_views():
@@ -327,7 +371,8 @@ def test_warmup_exercises_the_detector_and_the_embedder_on_every_view():
     embedder = _BatchingEmbedder()
     backend = _backend(embedder=embedder)
     backend.warmup({"cam0": (160, 120), "cam1": (64, 48)}, rounds=2)
-    assert backend.detector.batch_sizes == [2, 2]
+    # Two DIFFERENT shapes -> one batch each, per the shape-grouping rule below.
+    assert backend.detector.batch_sizes == [1, 1, 1, 1]
     assert embedder.multi_calls == 2
 
 

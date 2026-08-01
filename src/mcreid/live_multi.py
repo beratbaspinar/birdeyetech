@@ -14,21 +14,29 @@ same pixel in two views look co-located, and one person seen at opposite corners
 of two views looks metres apart. Every geometric gate in the fusion stage would
 be answering a question about a floor that does not exist.
 
-So this path runs **appearance-only fusion**: every geometric gate is opened to
-the point where it cannot reject anything, the association cost blend drops to
-pure appearance, and the appearance gates alone decide identity. See
-`appearance_only_fusion_config` for exactly which knobs move and why. Nothing
-downstream claims a metric position, and there is no BEV panel — the same
+So this path suspends geometry **between cameras, and only between cameras**.
+Within one camera the pixel plane is self-consistent and the motion gate is real
+evidence that must keep applying. The first version of this file did open every
+gate globally, and an adversarial review measured the cost on real WILDTRACK
+crops: a stranger walking into the same camera an identity had just coasted out
+of took that identity **63 % of the time**, against 0 % for the shipped config,
+with no second camera involved at all. See `appearance_only_fusion_config` and
+`FusionConfig.cross_camera_geometry_open`.
+
+Nothing downstream claims a metric position and there is no BEV panel — the same
 posture `mcreid-live` takes without `--homography`, carried through to the one
 place where it actually costs something.
 
-What that costs, stated up front rather than discovered later: cross-view
-identity now rests entirely on OSNet separating the same person seen from two
-angles. The measured same-person cross-camera distance on WILDTRACK is 0.525
-mean against a 0.56 gate, so genuine cross-view pairs are accepted around half
-the time per frame. Expect fragmentation into per-camera identities that the
-duplicate merge then heals over several frames, rather than a single identity
-from the first frame. That is a measurement to report, not a bug to hide.
+**The honest limit, measured rather than predicted.** The earlier version of this
+docstring said to expect *fragmentation* into per-camera identities. The
+measurement says the opposite: the failure mode is **over-fusion**. With one
+person per camera, two DIFFERENT people are merged into one identity 76.7 % of
+the time on real crops. The cause is not a threshold — the merge tests EMA-to-EMA
+vectors, whose different-person mean (0.456) already sits inside the strict 0.48
+gate, because averaging pulls every identity toward the population centroid.
+Fixing it needs a better embedder or a non-appearance cue, which is v2; until
+then this path is valid for ONE occupant and says so in
+`SINGLE_OCCUPANT_WARNING`.
 """
 
 from __future__ import annotations
@@ -58,11 +66,39 @@ Image = npt.NDArray[np.uint8]
 _FONT = cv2.FONT_HERSHEY_DUPLEX
 
 # A separation no pair of observations in a pixel-plane pseudo-world can reach.
-# Frame height maps to `span_m` (6 by default) and width to at most twice that,
-# so the largest possible separation is ~13.5 pseudo-metres; 1e4 is four orders
-# clear of it. Used instead of `inf` because several gates are compared against
-# products and sums that would turn inf into nan.
+# Frame height maps to `span_m` and width to at most twice that, so the largest
+# separation at the default span of 6 m is ~12.2 pseudo-metres and 1e4 clears it
+# by ~800x. Used instead of `inf` because several gates feed sums and products
+# that would turn inf into nan.
+#
+# It is applied to `birth_cluster_radius_m` ONLY, which is a plain metre
+# distance. An earlier version also assigned it to `association.chi2_gate`,
+# which compares a *squared* Mahalanobis distance — different units, and the
+# review measured the margin there at 1.69x rather than the four orders the
+# comment claimed. Worse, it inverted above `span_m ~ 8`: the "opened" gate
+# started rejecting exactly the cross-corner pairs it existed to accept. The
+# cross-camera exemption is now a flag rather than a magic distance, so no gate
+# in unfamiliar units is set from this constant.
 GEOMETRY_FREE_M = 1.0e4
+
+
+SINGLE_OCCUPANT_WARNING = (
+    "appearance-only fusion is valid for ONE occupant. With two people in view "
+    "it fuses them into one identity 76.7% of the time — measured on real "
+    "WILDTRACK crops with the shipped OSNet, one person per camera, against "
+    "0.0% for the geometry-gated config. The cause is the embedder, not these "
+    "thresholds: same-person cross-camera distance is 0.516 against "
+    "different-person 0.623, and the merge tests EMA-to-EMA vectors whose "
+    "different-person mean (0.456) already sits INSIDE the strict 0.48 gate. No "
+    "threshold on this path fixes that; a better embedder or a non-appearance "
+    "cue would."
+)
+"""Why the profile must not be read as general-purpose multi-camera fusion.
+
+Kept as a constant so the CLI, the docstrings and the test that pins it cannot
+drift apart, and so nobody has to rediscover the number by running the rig with
+two people in it.
+"""
 
 
 class MultiViewStepper(Protocol):
@@ -107,59 +143,71 @@ def uncalibrated_rig(sizes: Mapping[str, tuple[int, int]], span_m: float = 6.0) 
 
 
 def appearance_only_fusion_config(base: FusionConfig | None = None) -> FusionConfig:
-    """Open every geometric gate, leaving appearance as the sole evidence.
+    """Suspend geometry **between cameras**, and only between cameras.
 
-    Each override below exists because the corresponding gate would otherwise be
-    ruling on pixel coordinates from two cameras as if they were one floor:
+    The first version of this opened every radius globally, and an adversarial
+    review measured what that cost on real WILDTRACK crops. Two numbers decided
+    the current shape:
+
+    * A stranger walking into the same camera an identity had just coasted out
+      of took that identity **63 % of trials** (shipped config: 0 %).
+      **No second camera was involved in that attack.** Geometry is invalid
+      *across* cameras; within one camera the pixel plane is self-consistent and
+      the motion gate is real evidence. Opening it globally threw away a sound
+      constraint to repair an unsound one. Scoped: back to **0 %**.
+    * Two different people, one per camera, fused into one identity **90 % of
+      the time**. Scoped: **76.7 %** — better, and still far too high, which is
+      what `SINGLE_OCCUPANT_WARNING` exists to say out loud rather than bury.
+      Genuine cross-view fusion is 94.7 % over the same crops.
+
+    So the geometric exemption now lives in `FusionConfig.cross_camera_geometry_
+    open`, which scopes it to pairs that do not share one camera's pixel plane,
+    and only three things are set here:
 
     ``association.weight_geometry -> 0`` / ``weight_appearance -> 1``
-        The blended cost must not be moved by a Mahalanobis distance computed
-        between two unrelated pixel planes.
-    ``association.chi2_gate`` / ``max_distance_m``
-        The two hard geometric rejections in `build_cost_matrix`.
+        Ranking must not be moved by a distance between two unrelated pixel
+        planes. Same-camera pairs still *gate* on geometry; this only stops
+        geometry from ordering the candidates.
     ``association.max_cost -> 1.0``
-        Not cosmetic. With geometry weighted to zero the cost *is* the
-        normalised appearance distance, so the shipped ceiling of 0.85 would
-        silently tighten the appearance gate from 0.56 to 0.476. Raising it to
-        the clipped maximum makes `max_appearance_distance` the only appearance
-        decision, at the value it was measured at.
-    ``birth_cluster_radius_m`` / ``merge_radius_m`` / ``revive_max_reach_m`` /
-    ``revive_speed_margin_m``
-        Cross-camera birth clustering, duplicate merging and revival each gate
-        on a distance first. `_cluster` already refuses to put two observations
-        from the *same* camera in one cluster, so opening its radius widens
-        cross-camera grouping only.
-    ``cluster_appearance_distance -> association.max_appearance_distance``
-        The one gate that gets *stricter*. Its shipped 0.62 sits near the
-        different-person mean, and its docstring says why that is safe: two
-        detections within a metre of each other on the floor are already
-        strongly evidenced to be one person, so appearance need only veto the
-        clearly-different. Without a floor that premise is simply false, and a
-        veto at the different-person mean would fuse strangers on a coin flip.
-        Dropping it to the association operating point makes it a decision gate
-        rather than a veto, tied to the measured number rather than a new one.
+        Not cosmetic, and independently confirmed by the review. With geometry
+        weighted to zero the cost *is* the normalised appearance distance, so
+        the shipped 0.85 ceiling would silently tighten the appearance gate from
+        0.56 to 0.476 (measured: 0.4760 accepts, 0.4770 rejects). Raising it
+        makes `max_appearance_distance` the only appearance decision, at the
+        value it was measured at.
+    ``birth_cluster_radius_m -> GEOMETRY_FREE_M``
+        `_cluster` is the one path that is safe to open globally, because it
+        already refuses to put two observations from the *same* camera in one
+        cluster. Its radius therefore only ever widens cross-camera grouping.
 
-    Deliberately NOT touched: `max_appearance_distance` (0.56),
-    `merge_appearance_distance` (0.48), `revive_appearance_distance` (0.48) and
-    the whole dormant config. Those are the measured operating points, they are
-    the only evidence left, and loosening them here would be inventing numbers.
+    ``cluster_appearance_distance`` drops 0.62 -> 0.56 for the same reason as
+    before: the shipped value is justified by co-location evidence an
+    uncalibrated rig does not have, so it must become a decision gate rather
+    than a veto. Tied to `association.max_appearance_distance` rather than being
+    a new number.
+
+    Deliberately NOT touched: `max_appearance_distance`, the merge and revive
+    gates, and the whole dormant config. Appearance is the only evidence left,
+    and loosening its gates here would be inventing numbers on the path with the
+    least corroboration.
+
+    **This profile is still only safe for a single occupant.** See
+    `SINGLE_OCCUPANT_WARNING` — the residual cross-camera stranger-merge rate is
+    high enough that two people in view will fuse, and that is a property of the
+    embedder, not of these thresholds.
     """
     base = base or FusionConfig()
     association = replace(
         base.association,
         weight_geometry=0.0,
         weight_appearance=1.0,
-        chi2_gate=GEOMETRY_FREE_M,
-        max_distance_m=GEOMETRY_FREE_M,
         max_cost=1.0,
     )
     return replace(
         base,
         association=association,
+        cross_camera_geometry_open=True,
         birth_cluster_radius_m=GEOMETRY_FREE_M,
-        merge_radius_m=GEOMETRY_FREE_M,
-        revive_max_reach_m=GEOMETRY_FREE_M,
-        revive_speed_margin_m=GEOMETRY_FREE_M,
         cluster_appearance_distance=association.max_appearance_distance,
     )
 

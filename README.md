@@ -432,22 +432,43 @@ uv run mcreid-live-multi probe
 uv run mcreid-live-multi run --devices 0,1 --backend msmf --nominal-fps 30,15
 ```
 
-One shared detector and one shared embedder serve every camera, batched: two
-views cost one `predict` call and one embedding forward pass, not two of each.
-Each camera gets its own capture thread and its own `PerViewTracker`; the fusion
-stage sees a flat list of observations tagged `cam0`, `cam1`, … — the same
-contract the 7-camera WILDTRACK path runs on.
+One shared detector and one shared embedder serve every camera. Cameras of the
+**same** resolution are batched into one `predict` call; different resolutions
+are batched separately, because Ultralytics letterboxes a batch to a single
+shape and mixing 16:9 with 4:3 changes how the 16:9 view is scaled — measured,
+that turned 16 detections into 23 on the same frame. Each camera gets its own
+capture thread and its own `PerViewTracker`; the fusion stage sees a flat list
+of observations tagged `cam0`, `cam1`, … — the same contract the 7-camera
+WILDTRACK path runs on.
 
-**Fusion here is appearance-only, and that is a deliberate correction rather
-than a simplification.** Two uncalibrated cameras do not share a floor. Give
-each a pixel-plane stand-in and their "world" coordinates are scaled pixels in
-their own frame — so a geometric gate is not merely uninformative, it is
-answering a question about a floor that does not exist, and it rules *wrongly*
-in both directions. So every geometric gate is opened and the measured
-appearance gates decide alone. On the synthetic two-camera control, the
-geometry-gated config places one person ~4.9 pseudo-metres apart and mints two
-identities that never merge; the appearance-only profile holds one. There is no
-BEV panel and nothing claims a metric position.
+**`--occupancy` is an assertion about the room, not a preference.** Two
+uncalibrated cameras do not share a floor: give each a pixel-plane stand-in and
+their "world" coordinates are scaled pixels in their own frame, so a geometric
+gate between them is not uninformative but *wrong*. Under `--occupancy single`
+geometry abstains **between cameras, and only between cameras** — within one
+camera the pixel plane is self-consistent and the motion gate is real evidence
+that keeps applying.
+
+That scoping is not a detail. An earlier version of this opened every radius
+globally, and an adversarial review measured the cost on real WILDTRACK crops
+with the shipped OSNet:
+
+| scenario | geometry-gated | radii opened globally | scoped (shipped) |
+|---|---|---|---|
+| stranger enters the camera an ID just left — **one camera, no fusion involved** | 0 % | **63 %** steal the ID | **0 %** |
+| two different people, one per camera | 0 % fused | **90 %** fused | **76.7 %** fused |
+| one person, two cameras — the case we want | 0 % fused | 98 % | **94.7 %** fused |
+
+Read the bottom two rows together, because they are the honest limit: this path
+fuses the person you want **94.7 %** of the time and two strangers **76.7 %** of
+the time. That gap is not a threshold that needs moving. The merge compares
+EMA-to-EMA vectors, and averaging pulls every identity toward the population
+centroid until the different-person mean (0.456) sits *inside* the strict 0.48
+gate — so no value of that gate separates them. **`--occupancy single` is only
+valid when you are actually alone in view.** `--occupancy multi` keeps strangers
+safe and, on an uncalibrated rig, does no cross-view fusion at all (0 %). Fixing
+this properly needs a better embedder or a non-appearance cue, which is v2 — the
+same conclusion this project reached for the dormant gallery.
 
 The end-of-run **cross-view ledger** is the evidence to read — per identity, the
 set of cameras that ever supported it, how many frames had two cameras at once,
@@ -467,18 +488,12 @@ anything time-based, because a camera that delivers 15 FPS into a 30 FPS
 container header plays back at twice life speed (the run warns when it detects
 this).
 
-Measured on an RTX 4060 Laptop, 1280x720 + 640x480: **31.9 FPS end-to-end on an
+Measured on an RTX 4060 Laptop, 1280x720 + 640x480: **30.8 FPS end-to-end on an
 empty room, 22.3 FPS with one person in frame.** Detection costs 12.5 ms for one
 view and 22.5 ms for two; batching the embedder across views is close to free
 (15.5 ms for one crop, 15.7 ms for two from different cameras). Models are
 warmed before the loop — skipping that puts a **5.4 s** first-frame stall
 exactly where someone walks in, and averages it into the reported frame rate.
-
-Known and reported rather than hidden: without a homography, cross-view identity
-rests entirely on OSNet separating one person seen from two angles, and the
-measured same-person cross-camera distance on WILDTRACK is 0.525 against a 0.56
-gate. Fragmentation into per-camera identities that the duplicate merge then
-heals over several frames is the expected failure mode, not a surprise.
 
 ### Your own cameras — multi-camera rig
 

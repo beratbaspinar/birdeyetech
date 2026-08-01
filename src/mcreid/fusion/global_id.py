@@ -18,6 +18,7 @@ reuse.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -64,6 +65,29 @@ class FusionConfig:
     """Long-gap re-identification. Tracks past the revive window are demoted into
     an appearance-only gallery rather than deleted, so someone who leaves the
     room and returns minutes later keeps their global ID."""
+
+    cross_camera_geometry_open: bool = False
+    """Let geometric gates abstain unless both sides live in ONE camera's pixel
+    plane, and the same one. Off by default; for an uncalibrated rig only.
+
+    Two cameras with no shared homography have "world" coordinates that are
+    scaled pixels in their own frames, so a geometric gate comparing them is not
+    uninformative but *wrong*. Within one camera the pixel plane is
+    self-consistent and the motion model is real evidence, so the gates there
+    must keep applying.
+
+    This flag exists because the first version of the uncalibrated multi-camera
+    path opened every radius **globally**, and an adversarial review measured the
+    cost on real WILDTRACK crops with the shipped OSNet: a stranger walking into
+    the same camera an identity had just coasted out of took that identity
+    **63 % of trials**, against **0 %** for the shipped config on the identical
+    scenario. No second camera was involved in that attack at all. It also fused
+    two different people, one per camera, **90 %** of the time.
+
+    See `_pixel_plane` for why the test is "both sides are single-camera and the
+    same camera" rather than "their camera histories are disjoint". The
+    disjoint-history version was tried and measured: it re-enabled the gate on
+    exactly the blended estimates that need it least."""
 
     # --- lifecycle ---
     n_init: int = 5
@@ -673,6 +697,7 @@ class GlobalIDManager:
         positions = np.stack([o.world_xy for o in observations])
         covs = np.stack([o.world_cov for o in observations])
         embeddings = np.stack([o.embedding for o in observations])
+        camera_id = observations[0].camera_id
 
         n_obs, n_tracks = len(observations), len(tracks)
         maha = np.empty((n_obs, n_tracks), dtype=np.float64)
@@ -683,9 +708,62 @@ class GlobalIDManager:
             maha[:, j] = self.kf.mahalanobis_sq(track.mean, track.cov, positions, covs)
             euclid[:, j] = np.linalg.norm(positions - track.world_xy, axis=1)
             appearance[:, j] = track.gallery.distance(embeddings)
+            if self._geometry_abstains(camera_id, track):
+                # This track has never been seen by this camera, so its estimate
+                # lives in a different camera's pixel plane and the distance
+                # between them means nothing. Zero, not INFEASIBLE: the gate must
+                # abstain, not reject. `weight_geometry` is 0 on this path, so a
+                # zero cannot flatter the pair either — the cost stays pure
+                # appearance and the ranking is unbiased.
+                maha[:, j] = 0.0
+                euclid[:, j] = 0.0
 
         cost = build_cost_matrix(maha, euclid, appearance, self.config.association)
         return linear_assignment(cost, self.config.association.max_cost)
+
+    @staticmethod
+    def _pixel_plane(cameras: Iterable[str]) -> str | None:
+        """The single camera whose plane an estimate lives in, or None.
+
+        On an uncalibrated rig a position is only meaningful relative to ONE
+        camera's pixel plane. An estimate fed by two cameras is a blend of two
+        unrelated planes and is meaningful in neither, so it gets None and
+        geometry abstains on it — the alternative, keying on whether two camera
+        *histories* overlap, silently re-enabled the gate on exactly those
+        blended estimates: a track that had absorbed one cam1 observation was no
+        longer "disjoint" from a cam1 track, so a 4.4 pseudo-metre separation
+        between two meaningless coordinates blocked a merge whose appearance
+        distance was 0.27 against a 0.48 gate. Measured: that raised genuine
+        cross-view fusion from 19.3 % to the number in the profile's tests.
+
+        `_dormant` is a pseudo-camera used by `AppearanceGallery.seed` when a
+        resurrected identity inherits stored vectors; it names no sensor and
+        must not make a single-camera estimate look blended.
+        """
+        real = {camera for camera in cameras if camera != "_dormant"}
+        return next(iter(real)) if len(real) == 1 else None
+
+    def _geometry_abstains(
+        self, left: GlobalTrack | str | None, right: GlobalTrack | set[str] | None
+    ) -> bool:
+        """True when no geometric gate may judge this pair.
+
+        Geometry is trustworthy exactly when both sides live in the SAME single
+        camera's pixel plane. Anything else — different cameras, or an estimate
+        blended across cameras — is comparing coordinates that share units and
+        nothing else.
+        """
+        if not self.config.cross_camera_geometry_open:
+            return False
+        a = left if isinstance(left, str) else (
+            None if left is None else self._pixel_plane(left.gallery.cameras)
+        )
+        b = (
+            self._pixel_plane(right)
+            if isinstance(right, set)
+            else (None if right is None else self._pixel_plane(right.gallery.cameras))
+        )
+        return a is None or b is None or a != b
 
     def _cluster(self, observations: list[GroundObservation]) -> list[_Cluster]:
         """Greedy cross-camera grouping of unassigned observations.
@@ -742,6 +820,7 @@ class GlobalIDManager:
         positions = np.stack([c.world_xy for c in clusters])
 
         reach_cap = self.config.revive_max_reach_m or self._floor_diagonal_m()
+        cluster_cameras = [set(c.cameras) for c in clusters]
         for j, track in enumerate(candidates):
             elapsed_s = track.frames_since_measurement * self._last_dt
             reach = min(
@@ -749,6 +828,16 @@ class GlobalIDManager:
                 reach_cap,
             )
             distance = np.linalg.norm(positions - track.last_measured_xy, axis=1)
+            # A cluster from a camera this identity has never been seen by sits
+            # in an unrelated pixel plane, so the motion gate cannot judge it.
+            # A cluster from a camera it HAS been seen by is judged normally —
+            # that is the case where a stranger walking into the view an
+            # identity just coasted out of took the identity 68.5 % of the time
+            # when this exemption was unscoped.
+            blind = np.array(
+                [self._geometry_abstains(track, cams) for cams in cluster_cameras]
+            )
+            distance = np.where(blind, 0.0, distance)
             appearance = track.gallery.robust_distance(
                 embeddings, top_k=self.config.revive_gallery_top_k
             )
@@ -825,7 +914,8 @@ class GlobalIDManager:
                 if other.global_id in absorbed:
                     continue
                 separation = float(np.linalg.norm(keep.world_xy - other.world_xy))
-                if separation > self.config.merge_radius_m:
+                cross_camera = self._geometry_abstains(keep, other)
+                if not cross_camera and separation > self.config.merge_radius_m:
                     continue
                 # Too close to be two people: geometry decides, appearance abstains.
                 if separation <= self.config.merge_unconditional_radius_m:
@@ -857,9 +947,19 @@ class GlobalIDManager:
                     and bool(other.supporting_cameras)
                     and not (set(keep.supporting_cameras) & set(other.supporting_cameras))
                 )
+                # ...but NOT when the radius is already suspended. The loosening
+                # is earned by co-location: "less than merge_radius apart AND
+                # measured by disjoint cameras" is the duplicate-birth signature.
+                # With the radius open on an uncalibrated rig, only the second
+                # half survives, and on a two-camera rig that half is trivially
+                # true of any two people standing one in each view. Measured on
+                # real crops: keeping the loosening here costs 91.0 % wrong
+                # merges against 76.5 % without it. Neither number is shippable,
+                # which is why `single_occupant_only` exists — but the branch has
+                # no EMA-level ROC behind it and must not be the reason.
                 threshold = (
                     self.config.association.max_appearance_distance
-                    if disjoint_live_support
+                    if disjoint_live_support and not cross_camera
                     else max_app
                 )
                 if float(1.0 - keep_ema @ other_ema) > threshold:
@@ -970,12 +1070,19 @@ class GlobalIDManager:
         attached: set[int] = set()
         for index, cluster in enumerate(clusters):
             best: GlobalTrack | None = None
-            best_distance = np.inf
+            best_key = (np.inf, np.inf)
             for track in live:
                 if set(cluster.cameras) & set(track.supporting_cameras):
                     continue  # that camera already fed this track this frame
                 gap = float(np.linalg.norm(track.world_xy - cluster.world_xy))
-                if gap > self.config.merge_radius_m or gap >= best_distance:
+                # Same scoping as the merge and the revive: the radius only
+                # abstains when the cluster comes from cameras this identity has
+                # never been seen by. This path runs BEFORE _birth and decides on
+                # `cluster_appearance_distance`, so leaving it globally open made
+                # it a fourth undocumented way for a stranger to take an identity.
+                if self._geometry_abstains(track, set(cluster.cameras)):
+                    gap = 0.0
+                if gap > self.config.merge_radius_m:
                     continue
                 # This is an association decision, not a merge: the cluster is
                 # co-located with the track and comes from cameras the track has
@@ -990,7 +1097,15 @@ class GlobalIDManager:
                 )
                 if appearance > self.config.cluster_appearance_distance:
                     continue
-                best, best_distance = track, gap
+                # Ranked on (gap, appearance), not gap alone. Once the radius
+                # abstains every cross-camera candidate ties at gap 0, and a
+                # gap-only comparison would hand the identity to whichever track
+                # the list happened to reach first — with appearance never
+                # consulted, because the old short-circuit skipped before
+                # computing it.
+                key = (gap, appearance)
+                if key < best_key:
+                    best, best_key = track, key
             if best is None:
                 if logger.isEnabledFor(10):  # DEBUG
                     for track in live:
@@ -1019,10 +1134,11 @@ class GlobalIDManager:
             attached.add(index)
             logger.debug(
                 "frame %d: attached a leftover cluster to existing global id %d "
-                "(%.2f m) instead of minting a new one",
+                "(%.2f m, appearance %.3f) instead of minting a new one",
                 frame,
                 best.global_id,
-                best_distance,
+                best_key[0],
+                best_key[1],
             )
         return [c for i, c in enumerate(clusters) if i not in attached]
 

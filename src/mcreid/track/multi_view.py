@@ -119,9 +119,40 @@ class MultiViewBackend:
         return elapsed
 
     def detect_batch(self, images: Sequence[Image]) -> list[tuple[FloatArray, FloatArray]]:
-        """One batched forward pass. Returns (boxes (N,4) xyxy, scores (N,)) per image."""
+        """Detections per image, batched **within each frame shape**.
+
+        Not one batch over everything, and the difference is not academic.
+        Ultralytics letterboxes a batch to a single shape, so mixing a 16:9 view
+        with a 4:3 one changes how the 16:9 view is scaled. Measured with real
+        YOLO11s at imgsz 960 on this rig's actual pair (1280x720 + 640x480):
+        cam0 alone produced 16 boxes at mean confidence 0.491, and the same
+        frame inside a mixed batch produced **23** — the original 16 plus 7 new
+        low-confidence detections. A same-resolution batch reproduced the solo
+        result exactly, 16 for 16.
+
+        That is a different detector operating point, not a speedup, and it
+        would have quietly invalidated the claim that this backend is
+        indistinguishable from N single-camera ones. Grouping by shape keeps the
+        batching win between same-sized cameras and costs one extra call per
+        distinct resolution.
+        """
         if not images:
             return []
+        groups: dict[tuple[int, int], list[int]] = {}
+        for index, image in enumerate(images):
+            groups.setdefault(image.shape[:2], []).append(index)
+
+        out: list[tuple[FloatArray, FloatArray]] = [
+            (np.zeros((0, 4), dtype=np.float64), np.zeros(0, dtype=np.float64))
+        ] * len(images)
+        for indices in groups.values():
+            batch = [images[i] for i in indices]
+            for position, result in enumerate(self._predict(batch)):
+                out[indices[position]] = result
+        return out
+
+    def _predict(self, images: list[Image]) -> list[tuple[FloatArray, FloatArray]]:
+        """One batched forward pass over same-shaped images."""
         predictions: Any = self.detector.predict(
             source=list(images),
             device=self.device.torch_device,

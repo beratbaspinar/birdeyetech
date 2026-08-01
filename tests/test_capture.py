@@ -23,6 +23,7 @@ import pytest
 from mcreid.capture import (
     CAPTURE_BACKENDS,
     DEFAULT_BACKEND,
+    MAX_CONSECUTIVE_FAILURES,
     MP4V_BYTES_PER_PIXEL_FRAME,
     CameraRig,
     CameraSpec,
@@ -159,9 +160,7 @@ def test_a_failed_read_is_counted_and_does_not_stop_the_stream():
         stream.stop()
 
 
-def test_a_dead_capture_thread_surfaces_instead_of_looking_like_an_empty_room():
-    """The failure this rig cannot afford to misread: no detections because the
-    camera died, reported as no detections because nobody walked in."""
+def test_a_camera_that_never_delivers_a_frame_surfaces():
     capture = _FakeCapture(fail_every=1)
     stream = _stream(capture)
     stream.start()
@@ -171,6 +170,51 @@ def test_a_dead_capture_thread_surfaces_instead_of_looking_like_an_empty_room():
         rig = CameraRig([stream])
         with pytest.raises(RuntimeError, match="capture thread for cam0 died"):
             rig.raise_for_errors()
+    finally:
+        stream.stop()
+
+
+def test_a_camera_unplugged_MID_SESSION_surfaces():
+    """The half the old test missed, and the one that matters.
+
+    The previous guard also required `frames_read == 0`, so it could only fire
+    BEFORE the first successful frame — exactly the case the old test used. A
+    camera unplugged after delivering frames span-spun forever and
+    `raise_for_errors()` never raised: measured at 6.5 MILLION failed reads in
+    one second, on the machine whose deliverable is >=15 FPS from a GPU pipeline
+    sharing that CPU.
+    """
+    capture = _FakeCapture()
+    stream = _stream(capture)
+    stream.start()
+    try:
+        capture.allow(5)
+        assert _wait_for(lambda: stream.stats.frames_read >= 5)
+        assert stream.error is None
+
+        capture.fail_every = 1  # the cable comes out
+        capture.allow(MAX_CONSECUTIVE_FAILURES + 5)
+        assert _wait_for(lambda: stream.error is not None), (
+            "a camera that died after delivering frames was never reported"
+        )
+        with pytest.raises(RuntimeError, match="capture thread for cam0 died"):
+            CameraRig([stream]).raise_for_errors()
+    finally:
+        stream.stop()
+
+
+def test_an_occasional_dropped_frame_does_not_kill_the_stream():
+    """`frames_failed` is cumulative and cameras drop the odd frame. Only a RUN
+    of failures since the last success means the device is gone — counting the
+    cumulative total would kill a healthy long session."""
+    capture = _FakeCapture(fail_every=3)
+    stream = _stream(capture)
+    stream.start()
+    try:
+        capture.allow(120)
+        assert _wait_for(lambda: stream.stats.frames_read >= 70)
+        assert stream.stats.frames_failed > MAX_CONSECUTIVE_FAILURES
+        assert stream.error is None, "a healthy camera dropping 1 frame in 3 was killed"
     finally:
         stream.stop()
 
