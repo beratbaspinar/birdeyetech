@@ -540,8 +540,16 @@ window instead of following it.
 ### Calibrated multi-camera — a shared floor, and what it fixes
 
 ```bash
+uv run mcreid-calibrate mark --image calib/shots/cam0.png --camera-id cam0
+uv run mcreid-calibrate mark --image calib/shots/cam1.png --camera-id cam1
 uv run mcreid-calibrate floor --markers calib/floor_markers.yaml --out calib/rig_floor.json
 ```
+
+`mark` places every marker twice — a coarse click on the main view, then a click
+inside a 16x loupe worth **1/16 px**. That is not a convenience: a click on a
+scaled-to-fit frame is already worth more than 1 image px, and the pass rate
+falls off a cliff past 1 px. Only the twelve world coordinates are typed by
+hand; the file accumulates across cameras.
 
 ```bash
 uv run mcreid-live-multi run --devices 0,1 --rig calib/rig_floor.json
