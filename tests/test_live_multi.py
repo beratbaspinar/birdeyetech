@@ -678,3 +678,130 @@ def test_the_shipped_config_never_abstains():
     manager = GlobalIDManager(uncalibrated_rig(SIZES), FusionConfig())
     assert not manager._geometry_abstains("cam0", {"cam1"})
     assert not FusionConfig().cross_camera_geometry_open
+
+
+# --- FILED DEFECT: the identity is minted before it is adoptable -----------------------------
+
+
+def _leave_and_return(
+    absent: int, recover_frames: int = 55, entry_distance: float = 0.55
+) -> dict[str, object]:
+    """Present -> absent -> return with a truncated entry crop that improves.
+
+    Synthetic, and defensible here where session 3V's identity-core numbers were
+    not: the claim under test is about ORDERING — whether anything queries the
+    dormant gallery in the window where it would succeed — not about how far
+    apart two embeddings sit. `sim/toy.py`'s trap ("the generator and the gate
+    shared the assumption") bites when a synthetic appearance distribution is
+    used to justify an appearance threshold. Nothing here does.
+
+    The entry crop improves SMOOTHLY rather than stepping. That detail is load
+    bearing: with a step change the rival track loses its own match, the
+    observation falls through as a leftover cluster, and the gallery gets probed
+    by accident. A real re-entry improves gradually and the rival holds on.
+    """
+    from mcreid.fusion.global_id import GlobalIDManager
+
+    config = appearance_only_fusion_config()
+    manager = GlobalIDManager(uncalibrated_rig(SIZES), config)
+    good = _unit(3)
+    dt = 1.0 / 30.0
+    frame = 0
+    for _ in range(60):
+        manager.step([_obs("cam0", 1, [300, 200, 400, 600], good, frame)], frame, dt)
+        frame += 1
+    last_seen = frame - 1
+    original = sorted(set(manager.last_assignment.values()))[0]
+
+    dormant_frame = None
+    for _ in range(absent):
+        manager.step([], frame, dt)
+        if dormant_frame is None and len(manager.dormant):
+            dormant_frame = frame
+        frame += 1
+    reentry = frame
+
+    for i in range(220):
+        fraction = min(i / recover_frames, 1.0)
+        embedding = (
+            good if fraction >= 1.0 else _at_distance(good, entry_distance * (1.0 - fraction))
+        )
+        manager.step([_obs("cam0", 2, [900, 200, 1000, 600], embedding, frame)], frame, dt)
+        if dormant_frame is None and len(manager.dormant):
+            dormant_frame = frame
+        frame += 1
+
+    return {
+        "original": original,
+        "last_seen": last_seen,
+        "reentry": reentry,
+        "dormant_frame": dormant_frame,
+        "final": sorted(set(manager.last_assignment.values())),
+        "probes": manager.dormant.probe_report(),
+        "manager": manager,
+    }
+
+
+def _obs(
+    camera_id: str,
+    track_id: int,
+    box: list[float],
+    embedding: npt.NDArray[np.float64],
+    frame: int,
+) -> ViewObservation:
+    return ViewObservation(
+        camera_id=camera_id,
+        frame=frame,
+        local_track_id=track_id,
+        bbox_xyxy=np.asarray(box, dtype=np.float64),
+        embedding=embedding,
+        score=0.9,
+    )
+
+
+def test_retirement_latency_is_301_frames_not_max_coast_plus_reid_window():
+    """`reid_window_frames` counts from the LAST MEASUREMENT, so it overlaps
+    `max_coast_frames` instead of following it. 90 + 300 is 301 frames, not 390.
+    This project's own session notes record 390 and the arithmetic behind the
+    live capture protocol's '~25 s minimum gap' rests on it."""
+    config = appearance_only_fusion_config()
+    result = _leave_and_return(absent=600)
+    latency = result["dormant_frame"] - result["last_seen"]
+    assert latency == 301
+    assert latency != config.max_coast_frames + config.reid_window_frames
+
+
+def test_FILED_DEFECT_a_returning_person_inside_the_window_never_probes_the_gallery():
+    """RUN-1 DEFECT (a), REPRODUCED. Filed, not fixed — see decisions.md.
+
+    Return BEFORE the identity finishes retiring and the gallery is never
+    queried at all. The identity is still LOST, so `_resurrect` has nothing to
+    look at; `_revive` is the only path and its 0.48 gate rejects a truncated
+    entry crop; a new track is minted and CONFIRMS at n_init=5 frames; by the
+    time the identity lands in the gallery ~47 frames later the adoption window
+    (hits in [2, n_init), i.e. 3 frames) is long closed and the rival track
+    holds every observation so no leftover cluster ever forms.
+
+    The live run showed the appearance evidence was fine — first clean match at
+    f+55, distance 0.267 against a 0.42 gate. Nothing looked at it.
+
+    This test PINS THE DEFECT. A fix must flip it, deliberately.
+    """
+    result = _leave_and_return(absent=253)
+    gap = result["dormant_frame"] - result["reentry"]
+    assert gap == 47, f"expected the reported +47 frame gap, got {gap}"
+    assert result["final"] != [result["original"]], "expected fragmentation"
+    assert "none" in result["probes"][0], (
+        f"expected the gallery never to be queried, got: {result['probes'][0]}"
+    )
+
+
+def test_the_control_shows_ordering_is_the_cause_not_appearance():
+    """Identical crops, identical gates — only the return time moves. Return
+    AFTER retirement and the gallery IS queried. That is what makes this an
+    ordering defect rather than a threshold one."""
+    late = _leave_and_return(absent=400)
+    assert late["dormant_frame"] < late["reentry"], "control must return after retirement"
+    assert "none" not in late["probes"][0], (
+        f"the control must query the gallery, got: {late['probes'][0]}"
+    )
