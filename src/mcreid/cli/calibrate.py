@@ -415,3 +415,37 @@ def check(
 
 if __name__ == "__main__":  # pragma: no cover
     app()
+
+
+@app.command()
+def floor(
+    markers: Path = typer.Option(..., help="Floor-marker YAML — see mcreid.calib.floor."),
+    out: Path = typer.Option(Path("calib/rig_floor.json"), help="Where to write the rig."),
+    margin_m: float = typer.Option(1.0, help="Floor extent margin beyond the markers."),
+) -> None:
+    """Build an N-camera rig from floor markers, and refuse it if they disagree.
+
+    The cheapest calibration that puts several cameras in ONE world frame: mark
+    points on the floor, record where each camera sees each one, fit each
+    camera's homography against the SAME world list. Sharing that list is the
+    mechanism — it is what an uncalibrated multi-camera rig cannot provide, and
+    without it appearance has to carry cross-view identity alone.
+    """
+    from mcreid.calib.floor import build_and_gate, load_floor_markers
+
+    setup_logging("INFO")
+    parsed = load_floor_markers(markers)
+    typer.echo(
+        f"{parsed.n_markers} shared floor markers, cameras {parsed.camera_ids}"
+    )
+    try:
+        rig, agreement = build_and_gate(parsed)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    for line in agreement.report():
+        typer.echo(line)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    rig.save(out)
+    typer.secho(f"rig accepted and written to {out}", fg=typer.colors.GREEN)
