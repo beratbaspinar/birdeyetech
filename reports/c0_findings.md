@@ -98,3 +98,83 @@ reasoning for each is on record even though the file recording it did not exist 
 **For the next task, this verdict does not transfer.** A stature-based ground-contact estimator is
 a distinct C0 question (pose/keypoint estimators, ground-contact heads, published foot-point
 regressors, whatever exists), and §2 requires it to be asked before a line is written.
+
+---
+
+# C0 #2 — the foot-point estimator
+
+date: 2026-08-10
+searched by: inline, 4 web sweeps + 4 link resolutions
+status: **ACTUALLY SEARCHED.** Unlike the backfilled section above, this is a real C0 pass:
+surfaces named, every access claim verified by resolving the link, null results recorded.
+
+The question: **what supplies a person's ground-contact point better than the bottom edge of
+their detection box?** The defect is measured and old — `docs/artifacts/footpoint_iou*.json`,
+D-004 — and it is the cause of death 103 inherited. It has never had a prior-art pass.
+
+## Where I searched
+
+GitHub (ultralytics/ultralytics, open-mmlab/mmpose, ultralytics/assets releases), PyPI
+(`rtmlib`), HuggingFace (`qualcomm/Person-Foot-Detection` and its S3 release assets),
+docs.ultralytics.com, and the literature via web search on foot/ground-contact estimation,
+head-foot homology and stature-based ground-plane localisation (MDPI, arXiv, ECCV, Springer).
+
+## A0 — access gate (evaluated FIRST)
+
+Direct download, no registration, no email, no signed agreement — **verified by resolving the
+link**, not by reading a page that claims it.
+
+| candidate | link resolved | gate |
+|---|---|---|
+| `yolo11x-pose.pt`, `yolo11s-pose.pt` (ultralytics/assets releases) | `curl -sI -L` gives **HTTP 200**, redirecting to a signed release-asset URL, no auth | **pass** |
+| `rtmlib` (PyPI) | PyPI JSON API **HTTP 200** | **pass** |
+| RTMPose SDK models (OpenMMLab Deploee) | not resolved — the portal is the documented route | **not evaluated**; moot, `rtmlib` fetches from GitHub releases |
+| `qualcomm/Person-Foot-Detection` (HF) | HF API **HTTP 200, `gated: false`**. The repo holds no weights; `release_assets.json` gives a **public S3 URL** for the ONNX bundle, no credentials | **pass** — recorded properly, because it passing is what makes its rejection a cost decision rather than an access one |
+
+## Candidates
+
+| # | candidate | licence | fitness for our shape | verdict |
+|---|---|---|---|---|
+| 1 | **YOLO11-pose** (`yolo11{s,x}-pose.pt`, ultralytics 8.4.104 — already pinned and installed) | AGPL-3.0, same as this repo | COCO-17 keypoints; **left ankle 15, right ankle 16**, each carrying its own confidence in `keypoints.data[..., 2]`. Runs on the ultralytics runtime this repo already loads for detection, on the GPU already probed. Zero new dependencies, zero new runtimes, one weight file. | **ADOPT — the primary arm** |
+| 2 | **RTMPose** via `rtmlib` | Apache-2.0 | Genuinely good and genuinely light by its own standard — numpy + opencv + onnxruntime, no mmcv/mmpose. RTMPose-m is 75.8 AP at 430+ FPS on a GTX 1660 Ti. But its ankles are the same COCO-17 ankles candidate 1 gives us, bought with **a second inference runtime** alongside torch. | **REJECT: no advantage over candidate 1 on the one keypoint we need, at the cost of a second runtime.** Doctrine 14, KISS. Re-open only if YOLO11-pose's ankle quality is specifically what fails a gate |
+| 3 | **FootTrackNet** (Qualcomm `Person-Foot-Detection`) | BSD-3-Clause (its LICENSE defers to `qualcomm/ai-hub-models`; resolved and read) | **The closest thing to purpose-built that exists.** Person + face boxes, head *and feet* landmarks, and — the part nothing else offers — an explicit **feet visibility** output, which is exactly the signal our confidence handling otherwise has to synthesise from keypoint scores. | **REJECT for v1, and it is the strongest thing on this table.** Two costs: (a) onnxruntime, as above; (b) **it brings its own detector**, so its boxes are not our boxes — and the whole D-004/D-015 comparison rests on changing *only* the foot-point rule while the detections stay fixed. Adopting it would make the measurement un-attributable, which is a failure mode this workspace has already paid for. **First fallback if both built arms fail their gates** |
+| 4 | **Stature / head-foot homology** (single-view metrology: vertical vanishing point plus a known height; Criminisi-class, and the ECCV/MDPI multi-view line found above) | n/a — classical geometry, no artifact to license | Uses the box **top** — the head — which in a crowd is the edge that *survives*: heads stick out, feet are what gets occluded by whoever stands in front. That is the exact inverse of the failure mode D-004 measured, which is what makes it the right fallback rather than an arbitrary second option. Roughly thirty lines over the homography already in `calib/`. | **ADAPT — build it as the fallback arm.** No library is warranted for thirty lines of geometry we already hold every input for |
+| 5 | Pedestron, generic person detectors, WiFi/mmWave pose, TF `Person_Detection` demos | various | They detect people. We already detect people. | **REJECT: solves a problem we do not have** |
+| 6 | Upgrading ultralytics for YOLO26-pose (the docs now document YOLO26-pose: 2.9–57.6 M params, mAP 57.2–71.6) | AGPL-3.0 | Newer, and probably better. | **REJECT: out of scope.** `pyproject.toml` pins `ultralytics==8.4.104`, and every number this repo has published was measured under it. Changing the detector stack in the middle of a measurement is a confound, not an upgrade. Recorded as a real option for a later session |
+
+## Null results — recorded explicitly
+
+- **No drop-in ground-contact-point estimator exists** for the shape we have: fixed boxes in,
+  refined foot point out, no detector of its own. FootTrackNet is the only purpose-built model
+  found and it is a full detector. → **building the estimator is justified**; what we borrow is
+  the keypoints, not the estimator.
+- **No published foot-point error benchmark exists** in the form we need — cross-camera
+  disagreement in metres for the *same* person from *different* views. The literature reports
+  detection and tracking metrics downstream of the foot point, never the foot point itself. →
+  our own `mcreid.eval.footpoint` numbers are the reference, and they already exist.
+- **The D-015 noise-sweep harness is NOT in the repo.** Searched `src/`, `tests/`, `scripts/`
+  and the git history. D-015's table (0 % → 0.08 m → 99 %, 10 % → 0.48 m → 98 %, 20 % → 1.02 m →
+  33 %, 30 % → 1.48 m → 13 %) came from session-time analysis that was never committed — only
+  its *result* is on record, in `decisions.md`. → **the gates cannot be run against that harness,
+  because it does not exist.** What is committed and reproducible is `mcreid.eval.footpoint` plus
+  `mcreid-wildtrack footpoint`, which measures the same statistic — cross-camera disagreement in
+  metres — on real WILDTRACK boxes. The plan measures there and **routes D-015's threshold across
+  by its derivation**, which is the only honest move available. See `plan-footpoint.md` §3 and
+  the blockers row.
+
+## Numbers the plan will cite
+
+| number | value | source | what it gates |
+|---|---|---|---|
+| COCO ankle keypoint indices | left **15**, right **16**, 0-indexed | ultralytics pose docs, COCO-17 order | the implementation, not a gate |
+| box-bottom detector arm — the thing to beat | mean **0.62 m @ IoU 0.5 → 2.17 m @ IoU 0.1** | `docs/artifacts/footpoint_iou{0.5,0.3,0.1}.json` | G_FP1 baseline |
+| GT-box arm — the floor, threshold-independent | mean **0.123 m**, p90 0.207 m, 0 % beyond radius | same artifacts | what "as good as the boxes allow" means |
+| D-015 curve, gap → one-person-cross-view hold | 0.08 m → 99 % · **0.48 m → 98 %** · 1.02 m → 33 % · 1.48 m → 13 % | `decisions.md` D-015 | **G_FP2's threshold, by derivation** |
+| the hold criterion that curve is read against | **≥ 90 %**, approved, pre-existing | `decisions.md` D-014 | why 0.48 m and not some other point on the curve |
+
+## Verdict
+
+**Borrow the keypoints from YOLO11-pose and stop looking for an estimator — build the estimator,
+because none exists that takes our boxes.** The fallback arm is classical stature geometry, built
+rather than borrowed, for thirty lines. FootTrackNet is the recorded escape hatch if both arms
+fail, at the price of a second runtime and a broken attribution chain.
