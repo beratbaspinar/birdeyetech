@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,12 @@ import numpy as np
 import numpy.typing as npt
 import typer
 
+from mcreid.calib.ground_contact import (
+    ANKLE_HEIGHT_M,
+    DEFAULT_MIN_KEYPOINT_CONF,
+    DEFAULT_STATURE_M,
+    resolve_estimator,
+)
 from mcreid.eval.footpoint import (
     CLUSTER_RADIUS_M,
     MERGE_RADIUS_M,
@@ -42,6 +49,7 @@ from mcreid.fusion.dormant import DormantConfig
 from mcreid.fusion.global_id import FusionConfig, GlobalIDManager
 from mcreid.fusion.types import TrackState, ViewObservation
 from mcreid.track.gpu_view import GpuPerViewBackend, GpuViewConfig
+from mcreid.track.pose import DEFAULT_POSE_WEIGHTS, PoseBackend, PoseConfig
 from mcreid.track.reid_models import DEFAULT_EMBEDDER
 from mcreid.utils.device import probe_compute_device
 from mcreid.utils.logging import get_logger, setup_logging
@@ -365,6 +373,279 @@ def footpoint(
     )
 
 
+@app.command("footpoint-arms")
+def footpoint_arms(
+    root: Path = typer.Option(Path("data/wildtrack_full"), help="WILDTRACK root."),
+    out: Path = typer.Option(
+        Path("docs/artifacts/footpoint_estimators.json"),
+        help="Where to write the arm comparison. This file IS the gate evidence.",
+    ),
+    n_frames: int = typer.Option(40, help="Annotated frames to sample."),
+    start: int = typer.Option(0, help="First frame slot."),
+    weights: Path = typer.Option(Path("weights/yolo11x.pt"), help="Detector weights."),
+    pose_weights: Path = typer.Option(
+        DEFAULT_POSE_WEIGHTS, help="Pose weights. Fetched by ultralytics if absent."
+    ),
+    imgsz: int = typer.Option(1280, help="Detector input size."),
+    pose_imgsz: int = typer.Option(192, help="Pose input size, per person crop."),
+    conf: float = typer.Option(0.25, help="Detector confidence threshold."),
+    min_keypoint_conf: float = typer.Option(
+        DEFAULT_MIN_KEYPOINT_CONF, help="Ankle confidence below which the arm falls back."
+    ),
+    ankle_height_m: float = typer.Option(
+        ANKLE_HEIGHT_M, help="Plane an ankle sits on. 0.0 runs the ablation arm."
+    ),
+    stature_m: float = typer.Option(DEFAULT_STATURE_M, help="Assumed height for the head arm."),
+    device: str = typer.Option("auto", help="Compute device: auto | cpu | cuda | cuda:N."),
+    allow_cpu: bool = typer.Option(False, help="Run even if the probe resolves to CPU (§5)."),
+    seed: int = typer.Option(DEFAULT_SEED, help="RNG seed."),
+    log_level: str = typer.Option("INFO"),
+) -> None:
+    """Every foot-point arm, on identical detections, in one GPU pass.
+
+    This is the measurement `plan-footpoint.md`'s gates read. Three estimator
+    arms (`bbox`, `pose`, `stature`) x two box sources (GT, detector) x three IoU
+    attribution thresholds, all from the same frames, the same detections and the
+    same homographies — so the ONLY thing that varies between two numbers is the
+    thing being compared. The detector runs once per camera-frame and the pose
+    model once per box set; the IoU sweep is CPU re-matching over cached boxes.
+
+    The GT-box columns are not decoration. They are G_FP0b: an arm that cannot
+    reach the threshold even on perfect boxes is structurally incapable, and its
+    failure is a VOID rejection rather than a charged one.
+    """
+    setup_logging(log_level)
+    seed_everything(seed)
+    probe_compute_device(device, "mcreid-wildtrack footpoint-arms", allow_cpu=allow_cpu)
+    if not root.is_dir():
+        raise typer.BadParameter(
+            f"{root} not found. Run: python scripts/download_wildtrack.py fetch"
+        )
+
+    rig = load_rig(root / "calibrations")
+    cameras = {cam.camera_id: cam for cam in rig.cameras}
+    annotations = load_annotations(root / "annotations_positions", camera_ids=rig.camera_ids)
+    per_camera_paths = [_frame_paths(root, i) for i in range(len(rig.cameras))]
+    available = min(len(paths) for paths in per_camera_paths)
+    n_frames = min(n_frames, available - start)
+    if n_frames <= 0:
+        raise typer.BadParameter(f"no frames available from index {start} (have {available})")
+
+    backends = {
+        cam.camera_id: GpuPerViewBackend(
+            cam.camera_id,
+            GpuViewConfig(weights=weights, imgsz=imgsz, conf_threshold=conf, device=device),
+        )
+        for cam in rig.cameras
+    }
+    pose = PoseBackend(
+        PoseConfig(weights=pose_weights, imgsz=pose_imgsz, device=device, half=True)
+    )
+    arms = {
+        "bbox": resolve_estimator("bbox"),
+        "pose": resolve_estimator(
+            "pose", min_conf=min_keypoint_conf, ankle_height_m=ankle_height_m
+        ),
+        "stature": resolve_estimator("stature", stature_m=stature_m),
+    }
+    iou_thresholds = (0.5, 0.3, 0.1)
+
+    # distances[source][iou][arm] -> list of pair distances
+    distances: dict[str, dict[str, dict[str, list[float]]]] = {
+        "gt": {"gt": {a: [] for a in arms}},
+        "detector": {f"{t:g}": {a: [] for a in arms} for t in iou_thresholds},
+    }
+    fallbacks: dict[str, list[float]] = {"gt": [], "detector": []}
+    n_gt_boxes = 0
+    n_matched = {f"{t:g}": 0 for t in iou_thresholds}
+
+    typer.echo(f"measuring {n_frames} frames x {len(rig.cameras)} cameras, 3 arms ...")
+    for offset in range(n_frames):
+        slot = start + offset
+        index = _frame_number(per_camera_paths[0][slot])
+        people = annotations.get(index)
+        if not people:
+            continue
+
+        gt_boxes_by_cam: dict[str, FloatArray] = {}
+        gt_ankles_by_cam: dict[str, FloatArray] = {}
+        gt_ids_by_cam: dict[str, list[int]] = {}
+        det_boxes_by_cam: dict[str, FloatArray] = {}
+        det_ankles_by_cam: dict[str, FloatArray] = {}
+
+        for cam_index, cam in enumerate(rig.cameras):
+            gt_indices = [
+                i for i, p in enumerate(people) if p.bboxes.get(cam.camera_id) is not None
+            ]
+            if not gt_indices:
+                continue
+            raw = cv2.imread(str(per_camera_paths[cam_index][slot]), cv2.IMREAD_COLOR)
+            if raw is None:
+                raise OSError(f"could not read {per_camera_paths[cam_index][slot]}")
+            frame = np.asarray(raw, dtype=np.uint8)
+
+            gt_boxes = np.asarray(
+                [people[i].bboxes[cam.camera_id] for i in gt_indices], dtype=np.float64
+            )
+            det_boxes, _ = backends[cam.camera_id].detect(frame)
+
+            gt_boxes_by_cam[cam.camera_id] = gt_boxes
+            gt_ids_by_cam[cam.camera_id] = gt_indices
+            det_boxes_by_cam[cam.camera_id] = np.asarray(det_boxes, dtype=np.float64)
+            # One pose pass per box set per camera-frame. Everything downstream
+            # indexes into these rather than re-running the model.
+            gt_ankles_by_cam[cam.camera_id] = pose.ankles(frame, gt_boxes)
+            det_ankles_by_cam[cam.camera_id] = pose.ankles(frame, det_boxes)
+            n_gt_boxes += len(gt_indices)
+
+        # --- GT arm: boxes are given, no attribution needed -------------------
+        for person_slot in range(len(people)):
+            boxes: dict[str, FloatArray] = {}
+            ankles: dict[str, FloatArray] = {}
+            for camera_id, indices in gt_ids_by_cam.items():
+                if person_slot in indices:
+                    local = indices.index(person_slot)
+                    boxes[camera_id] = gt_boxes_by_cam[camera_id][local]
+                    ankles[camera_id] = gt_ankles_by_cam[camera_id][local : local + 1]
+            if len(boxes) < 2:
+                continue
+            for arm_name, arm in arms.items():
+                points = ground_points_per_camera(boxes, cameras, arm, ankles)
+                distances["gt"]["gt"][arm_name].extend(pairwise_disagreements(points))
+            fallbacks["gt"].extend(
+                float(arms["pose"](b.reshape(1, 4), cameras[c], ankles[c]).fallback_fraction)
+                for c, b in boxes.items()
+            )
+
+        # --- detector arm: one attribution per IoU threshold -------------------
+        for threshold in iou_thresholds:
+            key = f"{threshold:g}"
+            by_person: dict[int, dict[str, FloatArray]] = {}
+            ankles_by_person: dict[int, dict[str, FloatArray]] = {}
+            for camera_id, gt_boxes in gt_boxes_by_cam.items():
+                det_boxes = det_boxes_by_cam[camera_id]
+                for local_gt, local_det in match_detections_to_gt(
+                    gt_boxes, det_boxes, iou_threshold=threshold
+                ).items():
+                    pid = people[gt_ids_by_cam[camera_id][local_gt]].person_id
+                    by_person.setdefault(pid, {})[camera_id] = det_boxes[local_det]
+                    ankles_by_person.setdefault(pid, {})[camera_id] = det_ankles_by_cam[camera_id][
+                        local_det : local_det + 1
+                    ]
+                    n_matched[key] += 1
+
+            for pid, boxes in by_person.items():
+                if len(boxes) < 2:
+                    continue
+                ankles = ankles_by_person[pid]
+                for arm_name, arm in arms.items():
+                    points = ground_points_per_camera(boxes, cameras, arm, ankles)
+                    distances["detector"][key][arm_name].extend(pairwise_disagreements(points))
+                if threshold == iou_thresholds[-1]:
+                    fallbacks["detector"].extend(
+                        float(
+                            arms["pose"](
+                                b.reshape(1, 4), cameras[c], ankles[c]
+                            ).fallback_fraction
+                        )
+                        for c, b in boxes.items()
+                    )
+
+        if (offset + 1) % 5 == 0:
+            typer.echo(f"  {offset + 1}/{n_frames} frames")
+
+    summary: dict[str, Any] = {
+        "what_this_measures": (
+            "same-person cross-camera ground-position disagreement, per foot-point arm. "
+            "Identical frames, identical detections, identical homographies across arms; "
+            "the ONLY thing that varies between two numbers is the foot-point rule."
+        ),
+        "gate_evidence_for": ["G_FP0a", "G_FP0b", "G_FP1", "G_FP2"],
+        "frames_sampled": n_frames,
+        "start_frame_slot": start,
+        "cameras": len(rig.cameras),
+        "detector": {"weights": str(weights), "imgsz": imgsz, "conf": conf},
+        "pose": {
+            "weights": str(pose_weights),
+            "imgsz": pose_imgsz,
+            "min_keypoint_conf": min_keypoint_conf,
+            "ankle_height_m": ankle_height_m,
+        },
+        "stature_m": stature_m,
+        "seed": seed,
+        "gt_boxes_seen": n_gt_boxes,
+        "detector_boxes_attributed": n_matched,
+        "pose_fallback_fraction": {
+            source: (float(np.mean(values)) if values else None)
+            for source, values in fallbacks.items()
+        },
+        "arms": {
+            source: {
+                iou: {arm: summarize(d).as_dict() for arm, d in by_arm.items()}
+                for iou, by_arm in by_iou.items()
+            }
+            for source, by_iou in distances.items()
+        },
+    }
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    typer.echo(f"\nwrote {out}")
+
+    typer.echo("\n| source | IoU | arm | mean | p50 | p90 |")
+    typer.echo("|---|---|---|---|---|---|")
+    for source, by_iou in summary["arms"].items():
+        for iou, by_arm in by_iou.items():
+            for arm, stats in by_arm.items():
+                typer.echo(
+                    f"| {source} | {iou} | {arm} | {stats['mean_m']:.3f} | "
+                    f"{stats['p50_m']:.3f} | {stats['p90_m']:.3f} |"
+                )
+    fallback = summary["pose_fallback_fraction"]["detector"]
+    if fallback is not None:
+        typer.echo(f"\npose fell back to the box bottom on {fallback * 100:.1f} % of detections")
+
+
+def _apply_footpoint(
+    observations: list[ViewObservation],
+    cam: Any,
+    image: Image,
+    estimator: Any,
+    pose_backend: Any,
+) -> list[ViewObservation]:
+    """Rewrite each observation's box so its bottom-centre IS the estimated foot point.
+
+    The fusion stage derives the ground point from `bbox_xyxy` via the shipped
+    bottom-centre rule, and that is deliberately the only place it can come
+    from. Rather than thread a second coordinate through the frozen
+    `ViewObservation` contract — which every downstream consumer, overlay and
+    test is written against — the estimate is expressed IN that contract by
+    translating the box onto it. The box keeps its size, so crops, IoU and the
+    drawn rectangle are all unchanged; only where it sits on the floor moves.
+
+    `bbox` short-circuits to identity, so the default path is not merely
+    equivalent to the old one, it is the old one.
+    """
+    if estimator.name == "bbox" or not observations:
+        return observations
+
+    boxes = np.asarray([o.bbox_xyxy for o in observations], dtype=np.float64)
+    ankles = pose_backend.ankles(image, boxes) if pose_backend is not None else None
+    estimate = estimator(boxes, cam, ankles)
+
+    out: list[ViewObservation] = []
+    for obs, box, point in zip(observations, boxes, estimate.points_px, strict=True):
+        if not np.all(np.isfinite(point)):
+            out.append(obs)
+            continue
+        dx = float(point[0]) - float(box[0] + box[2]) * 0.5
+        dy = float(point[1]) - float(box[3])
+        out.append(
+            replace(obs, bbox_xyxy=box + np.array([dx, dy, dx, dy], dtype=np.float64))
+        )
+    return out
+
+
 @app.command()
 def run(
     root: Path = typer.Option(Path("data/wildtrack_full"), help="WILDTRACK root."),
@@ -388,6 +669,14 @@ def run(
         ),
     ),
     export_video: bool = typer.Option(True, help="Write annotated mosaic video + GIF."),
+    footpoint: str = typer.Option(
+        "bbox",
+        help=(
+            "Ground-contact rule: bbox | pose | stature. Default stays bbox until a "
+            "gate says otherwise (plan-footpoint.md §3)."
+        ),
+    ),
+    pose_weights: Path = typer.Option(DEFAULT_POSE_WEIGHTS, help="Pose weights, --footpoint pose."),
     device: str = typer.Option("auto", help="Compute device: auto | cpu | cuda | cuda:N."),
     allow_cpu: bool = typer.Option(
         False,
@@ -404,6 +693,12 @@ def run(
     # they were taken on the wrong device, which is the one failure mode that
     # does not announce itself.
     probe_compute_device(device, "mcreid-wildtrack run", allow_cpu=allow_cpu)
+    estimator = resolve_estimator(footpoint)
+    pose_backend = (
+        PoseBackend(PoseConfig(weights=pose_weights, device=device, half=True))
+        if footpoint == "pose"
+        else None
+    )
     if not root.is_dir():
         raise typer.BadParameter(
             f"{root} not found. Run: python scripts/download_wildtrack.py fetch"
@@ -459,7 +754,8 @@ def run(
                 raise OSError(f"could not read {path}")
             image: Image = np.asarray(raw, dtype=np.uint8)
             images[cam.camera_id] = image
-            views.extend(backends[cam.camera_id].step(image, index))
+            observed = backends[cam.camera_id].step(image, index)
+            views.extend(_apply_footpoint(observed, cam, image, estimator, pose_backend))
 
         snapshots = manager.step(views, index, dt)
         timings.append(time.perf_counter() - started)

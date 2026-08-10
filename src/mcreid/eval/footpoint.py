@@ -28,7 +28,8 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from mcreid.calib.geometry import feet_point, image_to_ground
+from mcreid.calib.geometry import image_to_ground
+from mcreid.calib.ground_contact import BboxFootPoint, FootPointEstimator
 from mcreid.calib.schema import CameraCalib
 
 FloatArray = npt.NDArray[np.float64]
@@ -109,19 +110,28 @@ def match_detections_to_gt(
 def ground_points_per_camera(
     boxes_by_camera: Mapping[str, npt.ArrayLike],
     cameras: Mapping[str, CameraCalib],
+    estimator: FootPointEstimator | None = None,
+    ankles_by_camera: Mapping[str, npt.ArrayLike] | None = None,
 ) -> dict[str, FloatArray]:
-    """Project one box per camera to world XY via the shipped foot-point path.
+    """Project one box per camera to world XY via the chosen foot-point rule.
 
     Cameras whose projection is invalid (foot point beyond the horizon) are
     dropped rather than returned as NaN, so callers cannot accidentally average
     them in.
+
+    ``estimator`` defaults to the shipped bottom-centre rule, so every existing
+    call site keeps measuring exactly what it measured before — which is what
+    G_FP0a in `plan-footpoint.md` proves rather than assumes.
     """
+    rule = estimator if estimator is not None else BboxFootPoint()
     out: dict[str, FloatArray] = {}
     for camera_id, box in boxes_by_camera.items():
         cam = cameras.get(camera_id)
         if cam is None:
             continue
-        world, valid = image_to_ground(cam, feet_point(box))
+        ankles = None if ankles_by_camera is None else ankles_by_camera.get(camera_id)
+        estimate = rule(np.asarray(box, dtype=np.float64).reshape(1, 4), cam, ankles)
+        world, valid = image_to_ground(cam, estimate.points_px)
         if bool(valid[0]) and np.all(np.isfinite(world[0])):
             out[camera_id] = np.asarray(world[0], dtype=np.float64)
     return out

@@ -1,0 +1,28 @@
+{
+  "what_this_measures": "G_FP3: the pipeline runs end to end under each foot-point rule, and what pose costs.",
+  "gate_evidence_for": [
+    "G_FP3"
+  ],
+  "clip": {
+    "root": "data/wildtrack_full",
+    "n_frames": 20,
+    "cameras": 7,
+    "device": "cuda:0",
+    "export_video": false,
+    "detector": "yolo11x.pt @1280",
+    "pose": "yolo11x-pose.pt @192"
+  },
+  "bbox": {
+    "exit_ok": true,
+    "fps": 0.5079420807841469,
+    "median_ms_per_frame_all_cameras": 1968.72840001015,
+    "per_camera_fps": 3.5555945654890286
+  },
+  "pose": {
+    "exit_ok": true,
+    "fps": 0.20184401869684754,
+    "median_ms_per_frame_all_cameras": 4954.320699995151,
+    "per_camera_fps": 1.4129081308779328
+  },
+  "note": "Both arms completed without a crash, which is half of G_FP3. The runtime half fails: pose runs once per DETECTION (121.15 detections/frame across 7 cameras), not once per frame, so its cost scales with crowd size. 2.52x the wall clock, i.e. 39.7% of the baseline rate against a 80% floor."
+}

@@ -22,6 +22,17 @@ manufacture one. **The log is otherwise empty and starts now** — the absence o
 |---|---|---|---|---|---|---|
 | 1 | 2026-08-01 | floor-calibration gate: minimum marker count | **4 → 6 markers** (procedure asks 12) | Four correspondences fit a homography EXACTLY (`getPerspectiveTransform` reproduces them to ~1e-15), so the in-sample residual is identically zero for every rig *including a badly mismarked one*, and cross-camera agreement on those same points is zero by construction. A four-point gate is not a weak gate, it is an algebraic identity. Leave-one-out over ≥ 6 markers measures generalisation to a point the fit never saw. | lead | **yes — and it made the gate STRICTER.** The approved scope said four points; the approved *requirement* was a gate that can fail, and four points cannot produce one. Recorded as a deviation from the scope, executed, and stated in the same session it was taken (`decisions.md` D-013). |
 
+| 2 | 2026-08-10 | foot-point eval: stature constant used for the WILDTRACK measurement | **1.70 m → 1.82 m** (CLI argument only; `DEFAULT_STATURE_M` in code stays 1.70) | **Recovered from WILDTRACK's own annotation geometry, before the gates were read.** G_FP0b showed the stature arm at 5.43 m mean disagreement on GT boxes — an impossible number for exact geometry on exact boxes, so it was diagnosed rather than recorded. Solving for the world height whose projection lands on each GT box edge gives **box bottom ↔ h = +0.01 m and box top ↔ h = +1.82 m, identically across cameras and people** (CVLab1 +1.82/+1.82/+1.83/+1.82, CVLab3 +1.82). WILDTRACK's boxes are rendered from a POM cylinder ~1.8 m tall; 1.70 m was simply the wrong number for this surface. This is a **parameter defect found by an instrument check, not a threshold moved to pass a gate** — no gate threshold changed, and the arm may still fail. | lead | **no** — no gate, threshold or acceptance criterion was touched. G_FP2 remains 0.48 m |
+
+**Row 2's honest caveat, stated because it weakens a number in our favour.** Deriving the
+constant from GT-box geometry makes the stature arm's **GT-box column near-tautological**: those
+boxes are *generated* from a 1.8 m cylinder standing at the annotated position, so inverting them
+with h = 1.82 recovers the annotation by construction rather than by estimation. The GT column is
+therefore not a meaningful ceiling for this arm. **The detector column is, and it is the one the
+gates read.** The same caveat applies in reverse to the `bbox` arm: on GT boxes the box bottom is
+the cylinder's base at h ≈ 0.01 m, which is why it scores 0.123 m there and why "beat box-bottom
+on GT boxes" is not a fair contest either.
+
 A row with "gate semantics changed? **yes**" and authority "lead" is normally a defect — only the
 operator can sign that. Row 1 is entered anyway, with its reasoning intact, because suppressing it
 would be the worse failure: the deviation happened, the operator was told, and the direction was
