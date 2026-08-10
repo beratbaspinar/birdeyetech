@@ -13,19 +13,50 @@ rather than left out: see [Stress test](#stress-test--where-this-breaks-and-why)
 someone else — YOLO11x on COCO for detection, OSNet on MSMT17 for appearance —
 and none of them has seen any evaluation data used here. The fusion is geometric.
 
-![cardboard demo](docs/assets/cardboard_demo.gif)
+![real-data demo — BEV from WILDTRACK](docs/assets/public_demo_bev.gif)
 
-*The hero scenario: one person, four cameras, progressively occluded — one
-camera, then two, then three, then **all four** for 2.5 s. The BEV dot switches
-to a hollow coasting ring, holds its ID through the blackout, and re-locks on the
+*Real public data, the dataset's own calibration, the whole pipeline end to end.
+Seven cameras of [WILDTRACK](https://www.epfl.ch/labs/cvlab/data/data-wildtrack/)
+fused onto one metric floor plan: every dot is a global identity, held across
+cameras by geometry plus appearance. Rebuild it with one command —
+[Quickstart](#quickstart).*
+
+> **What you are looking at, stated exactly.** This is the **bird's-eye view
+> only**, and that is a licence decision rather than a stylistic one: a GIF
+> rendered from WILDTRACK frames would be redistributing the dataset, which this
+> repo does not do. The BEV canvas is procedural — floor grid, identity dots,
+> camera frusta — so it carries no dataset pixels. Per-camera overlays are
+> rendered by the same command and stay local.
+>
+> **And it is a crowd, which is not what this project claims.** The segment shown
+> is the *sparsest 40-frame window WILDTRACK contains* and it still averages
+> **15.6 people per frame** (floor over the whole dataset: 13). The target regime
+> — one to a handful of people in a room — does not exist anywhere in this
+> dataset. What the crowd case is good for is
+> [failure analysis](#stress-test--where-this-breaks-and-why), and that is how it
+> is used here. **Do not read this GIF as the hero scenario.** The honest numbers
+> for this exact segment are in [Results](#results).
+
+### The scenario this project is actually about — synthetic
+
+The regime above is not the one `mcreid` is designed for, and no public
+dataset on hand contains the one that is (see
+[Limitations](#limitations)). So the hero scenario below is **synthetic and
+labelled as such throughout** — it reproduces the intended geometry and
+occlusion timeline, and it is not evidence about real footage.
+
+![cardboard demo — SYNTHETIC](docs/assets/cardboard_demo.gif)
+
+*Synthetic. One person, four cameras, progressively occluded — one camera,
+then two, then three, then all four for 2.5 s. The BEV dot switches to a
+hollow coasting ring, holds its ID through the blackout, and re-locks on the
 same ID when the person reappears.*
 
-> **This GIF is the synthetic reproduction of the scenario, not real footage.**
-> The real four-camera capture is pending — the recording protocol is written and
-> ready, and the synthetic scene reproduces its exact geometry and occlusion
-> timeline so only the detector front-end is new when the clips arrive.
+> **The real four-camera capture will never happen** — the capture session was
+> cancelled, so this synthetic reproduction is the strongest evidence this
+> scenario will ever have, and it is reported as such.
 
-### Walkthrough — three events, narrated
+### Walkthrough — three events, narrated (synthetic)
 
 ![three-event walkthrough](docs/assets/hpc_demo.gif)
 
@@ -58,6 +89,55 @@ uv run mcreid-hpc-demo --out reports/hpc_demo.mp4
 ---
 
 ## Results
+
+### The shipped demo — real public data, the dataset's own calibration
+
+One command, one pinned segment, both arms. Numbers below are
+`docs/artifacts/public_demo_arms.json`, measured on **the exact frames the GIF at
+the top shows** — WILDTRACK frames 1555–1750,
+40 annotated frames across 7 cameras, mean
+15.6 people/frame (min 13,
+max 19), **27 ground-truth identities**.
+
+| | calibrated (geometry + appearance) | uncalibrated (appearance only) |
+|---|---|---|
+| identities shown | **95** | **1** |
+| live identities per frame | 46.2 | 0.9 |
+| ID switches | 11 | 0 |
+| mean position error | **0.141 m** | 0.638 m |
+
+**Read this table as a failure, because that is what it is.** Against 27 real
+people, the calibrated arm reports 95 identities — it over-segments by
+roughly 3.5x. The appearance-only arm collapses the entire scene into
+1 identity, which is the same mechanism
+[D-008 measured](#stress-test--where-this-breaks-and-why): averaging appearance
+vectors pulls identities toward the population centroid until everyone matches
+everyone. Over-segmentation versus total collapse, in opposite directions.
+
+**The 0 switches in the right-hand column are not a win.** An arm holding one
+identity has nothing to switch between. This project has been caught by that shape
+of metric before — a stateless stub once passed a single-agent gate — so it is
+called out here rather than quietly counted.
+
+**What calibration is still worth, on the one metric that is not degenerate:**
+mean position error **0.141 m** with geometry against
+**0.638 m** without, a 4.5x difference.
+
+### What calibration does in the regime this project is for
+
+Measured separately, on real OSNet embeddings over real WILDTRACK crops with exact
+rig geometry, in the sparse scenes the crowd segment above cannot provide:
+
+| scene | uncalibrated | calibrated | required |
+|---|---|---|---|
+| two people, one per camera — stay 2 IDs | 31.0 % | **100.0 %** | ≥ 95 % |
+| two people, both in both views — stay 2 IDs | 4.0 % | **100.0 %** | — |
+| one person, two cameras — holds 1 ID | 96.0 % | **99.0 %** | ≥ 90 % |
+
+That is the measured backbone of the whole geometry argument, and it is a
+*sparse-scene* result. The crowd table above is what happens when the same
+machinery meets fifteen people at once. Both are true; neither generalises to the
+other.
 
 ### Primary — persistent ID under occlusion
 
@@ -307,6 +387,32 @@ ones that cost the most to learn are in [Limitations](#limitations) and
 ```bash
 uv venv --python 3.11 && uv pip install -e ".[dev]"
 ```
+
+### The real-data demo (the GIF at the top of this page)
+
+Two commands from a clean clone. The first downloads WILDTRACK (~7 GB,
+SHA-256 pinned, direct from EPFL — no registration); the second runs the whole
+pipeline on the dataset's own calibration and rebuilds the BEV video and GIF.
+
+```bash
+uv run python scripts/download_wildtrack.py fetch
+```
+
+```bash
+uv run mcreid-public-demo wildtrack
+```
+
+Needs a CUDA GPU: the run refuses to start on CPU rather than silently taking
+twenty times longer. It writes `docs/assets/public_demo_bev.{mp4,gif}` plus the
+two metric JSONs in `docs/artifacts/` that the Results table above is read from,
+and prints the arm comparison as it goes. Check it against the committed numbers
+with:
+
+```bash
+uv run python scripts/check_demo_gates.py
+```
+
+### The synthetic scenes — no footage, no GPU, no dataset
 
 Then run the whole pipeline on a scripted scene — no footage, no GPU, no dataset.
 

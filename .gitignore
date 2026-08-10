@@ -54,6 +54,14 @@ htmlcov/
 # anywhere in it. 1.1 MB, and it is a highlights excerpt — the full 57 s mp4
 # stays out of git and is rebuilt by the command in the README.
 !docs/assets/hpc_demo.gif
+# Third vetted asset, its own deliberate line, and this one needed the most care
+# because it comes from a run over REAL WILDTRACK frames. It is the BEV canvas
+# only — `mcreid.viz.bev` draws a blank canvas and puts a floor grid, identity
+# dots and camera frusta on it; it never takes an image argument, so no dataset
+# pixel can reach it. The per-camera overlays from the same run render real
+# frames and stay in gitignored reports/. The .mp4 beside it stays out: it is
+# rebuildable with one command and git is not a video host.
+!docs/assets/public_demo_bev.gif
 
 # --- calibration produced from my room (personal) ---
 /calib/
