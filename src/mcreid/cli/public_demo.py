@@ -42,11 +42,18 @@ import numpy as np
 import numpy.typing as npt
 import typer
 
+from mcreid.calib.epfl import (
+    build_rig,
+    grid_id_to_world_m,
+    parse_calibration,
+    parse_ground_truth,
+)
 from mcreid.eval.id_metrics import evaluate_id_consistency
 from mcreid.eval.wildtrack import load_annotations, load_rig
 from mcreid.fusion.global_id import FusionConfig, GlobalIDManager
 from mcreid.live_multi import appearance_only_fusion_config
 from mcreid.track.gpu_view import GpuPerViewBackend, GpuViewConfig
+from mcreid.track.per_view import PerViewConfig
 from mcreid.track.reid_models import DEFAULT_EMBEDDER
 from mcreid.utils.device import probe_compute_device
 from mcreid.utils.logging import get_logger, setup_logging
@@ -391,3 +398,256 @@ def wildtrack(
             f"{a['id_switches']} | {a['mean_position_error_m']:.3f} m |"
         )
     typer.echo(f"\nground truth in this segment: {len(person_ids)} identities")
+
+
+# --- EPFL Laboratory, arm 2 -------------------------------------------------
+#
+# GRID-METRIC, NOT METRIC. The scale derivation dead-ended on evidence
+# (`plan-public-demo.md` §10, `reports/deviation-log.md` row 3): EPFL ships no
+# intrinsics, only two of four cameras carry the head-plane homography that is the
+# metric ruler, and the ground homography's two Zhang constraints are mutually
+# inconsistent under a centred principal point — under fx != fy no camera has a
+# positive solution at all. A vertical ruler cannot be transferred to a horizontal
+# ground distance without the camera's internals, so the cell size is
+# unidentifiable from this data.
+#
+# So this arm works in GRID CELLS and says so everywhere. The radii below are
+# RE-DERIVED, not converted: a conversion would need the scale we just said we do
+# not have. A cluster radius has to sit above same-person cross-camera
+# disagreement and below the separation of distinct people, or it fuses two people
+# by construction — and EPFL's own ground truth puts distinct people at p05 6.1
+# cells apart, so 3.0 cells is the same comfortably-inside-the-bracket position
+# 1.0 m held on a metric rig.
+EPFL_CELL_UNIT = 1.0  # world unit == one grid cell, by construction
+EPFL_BIRTH_CLUSTER_CELLS = 3.0
+EPFL_MERGE_CELLS = 2.25
+EPFL_IMAGE_SIZE = (360, 288)
+EPFL_GT_STRIDE = 25  # the ground truth is annotated once a second at 25 fps
+
+
+def epfl_fusion_config() -> FusionConfig:
+    """`FusionConfig` in grid cells. Deviation-log row 3."""
+    return FusionConfig(
+        birth_cluster_radius_m=EPFL_BIRTH_CLUSTER_CELLS,
+        merge_radius_m=EPFL_MERGE_CELLS,
+    )
+
+
+@app.command("epfl")
+def epfl(
+    root: Path = typer.Option(Path("data/epfl_lab"), help="EPFL Laboratory sequence root."),
+    sequence: str = typer.Option("6p", help="Which sequence: 4p | 6p."),
+    out_dir: Path = typer.Option(Path("docs/assets"), help="Where the BEV artifacts land."),
+    n_frames: int = typer.Option(60, help="Annotated frames (1 s apart) to run."),
+    start: int = typer.Option(0, help="First annotated frame."),
+    weights: Path = typer.Option(Path("weights/yolo11x.pt"), help="Detector weights."),
+    embedder: str = typer.Option(DEFAULT_EMBEDDER),
+    imgsz: int = typer.Option(640, help="Detector input size. The frames are 360x288."),
+    conf: float = typer.Option(0.25, help="Detection confidence floor."),
+    playback_fps: float = typer.Option(6.0, help="Playback rate of the exported artifacts."),
+    device: str = typer.Option("auto", help="Compute device: auto | cpu | cuda | cuda:N."),
+    allow_cpu: bool = typer.Option(False, help="Run even if the probe resolves to CPU."),
+    seed: int = typer.Option(DEFAULT_SEED),
+    log_level: str = typer.Option("INFO"),
+) -> None:
+    """The SPARSE demo: 4-6 people in a room, 4 cameras, the dataset's own calibration.
+
+    This is the regime `context.md` §1 actually scopes 102 to, and the only public
+    dataset on hand that contains it. Distances are in GRID CELLS, not metres —
+    see the module note and deviation-log row 3.
+    """
+    setup_logging(log_level)
+    seed_everything(seed)
+    probe_compute_device(device, "mcreid-public-demo epfl", allow_cpu=allow_cpu)
+    if not root.is_dir():
+        raise typer.BadParameter(f"{root} not found. See the README quickstart for the fetch.")
+
+    calibs = parse_calibration(root / f"calibration-{sequence}.txt")
+    positions, header = parse_ground_truth(root / f"gt_lab_{sequence}.txt")
+    grid = (header["grid_w"], header["grid_h"])
+    rig = build_rig(calibs, EPFL_CELL_UNIT, EPFL_IMAGE_SIZE, grid)
+    typer.echo(
+        f"{len(rig.cameras)} cameras, grid {grid[0]}x{grid[1]}, GRID-METRIC (1 unit = 1 cell)"
+    )
+
+    captures = [
+        cv2.VideoCapture(str(root / f"{sequence}-c{i}.avi")) for i in range(len(rig.cameras))
+    ]
+    for index, capture in enumerate(captures):
+        if not capture.isOpened():
+            raise typer.BadParameter(f"could not open {root}/{sequence}-c{index}.avi")
+
+    annotated = sorted(positions)[start : start + n_frames]
+    if not annotated:
+        raise typer.BadParameter(f"no annotated frames from index {start}")
+
+    frames_by_camera: dict[str, list[Any]] = {c.camera_id: [] for c in rig.cameras}
+    kept: list[int] = []
+    for row in annotated:
+        images = []
+        ok = True
+        for capture in captures:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, row)
+            good, frame = capture.read()
+            if not good or frame is None:
+                ok = False
+                break
+            images.append(np.asarray(frame, dtype=np.uint8))
+        if not ok:
+            continue
+        for cam, image in zip(rig.cameras, images, strict=True):
+            frames_by_camera[cam.camera_id].append(image)
+        kept.append(row)
+    for capture in captures:
+        capture.release()
+    stride_s = EPFL_GT_STRIDE / float(header["fps"])
+    typer.echo(f"decoded {len(kept)} annotated frames ({stride_s:.1f} s apart)")
+
+    view_config = GpuViewConfig(
+        weights=weights, imgsz=imgsz, conf_threshold=conf, embedder=embedder, device=device
+    )
+
+    # n_init=1, for the reason `cli/eval_wildtrack.py` already documents: the
+    # per-view tracker links frames by IoU continuity, and EPFL's ground truth is
+    # annotated ONCE A SECOND. A person moves ~5 grid cells in that time, so
+    # consecutive boxes do not overlap at all, nothing ever reaches the default
+    # n_init=5, and the first run of this command reported ZERO identities with a
+    # detector that was finding people at 0.86-0.92 confidence. The cross-camera
+    # identity work is done by the fusion stage here, not the per-view stage.
+    #
+    # D-002's consequence applies and is accepted: n_init also sets the
+    # dormant-adoption window (`hits in [2, n_init)`), which at n_init=1 is empty,
+    # so dormant adoption is off on this arm. Over 60 frames one second apart that
+    # mechanism was never the one on display.
+    per_view = PerViewConfig(n_init=1)
+
+    def fresh() -> dict[str, GpuPerViewBackend]:
+        return {
+            c.camera_id: GpuPerViewBackend(c.camera_id, view_config, per_view)
+            for c in rig.cameras
+        }
+
+    people = sorted({p for row in kept for p in positions[row]})
+    gt_world = {p: np.full((len(kept), 2), np.nan, dtype=np.float64) for p in people}
+    gt_visible = {p: np.zeros((len(kept), len(rig.cameras)), dtype=bool) for p in people}
+    occupancy = []
+    for slot, row in enumerate(kept):
+        occupancy.append(len(positions[row]))
+        for person, position_id in positions[row].items():
+            gt_world[person][slot] = grid_id_to_world_m(position_id, grid[0], EPFL_CELL_UNIT)
+            # EPFL's GT records presence in the ROOM, not per camera. Marking all
+            # cameras keeps the coverage metric honest about what is known rather
+            # than inventing per-view visibility the dataset never claimed.
+            gt_visible[person][slot, :] = True
+
+    arms = {}
+    for label, config, render in (
+        ("calibrated", epfl_fusion_config(), True),
+        ("uncalibrated", appearance_only_fusion_config(epfl_fusion_config()), False),
+    ):
+        typer.echo(f"running arm: {label} ...")
+        arms[label] = _run_arm(
+            label=label,
+            rig=rig,
+            fusion_config=config,
+            frames_by_camera=frames_by_camera,
+            frame_indices=kept,
+            backends=fresh(),
+            dt=stride_s,
+            render=render,
+        )
+
+    reports = {
+        label: evaluate_id_consistency(
+            gt_world=gt_world,
+            gt_visible=gt_visible,
+            results=arm["snapshots_per_frame"],
+            n_ids_issued=arm["n_ids_issued"],
+            match_radius_m=EPFL_BIRTH_CLUSTER_CELLS,
+        )
+        for label, arm in arms.items()
+    }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bev_frames = arms["calibrated"]["bev_frames"]
+    mp4 = _write_video(bev_frames, out_dir / "epfl_demo_bev.mp4", playback_fps)
+    gif = _write_gif(bev_frames, out_dir / "epfl_demo_bev.gif", playback_fps)
+
+    summary: dict[str, Any] = {
+        "what_this_is": (
+            "the SPARSE demo: EPFL CVLab Laboratory, 4 cameras, the dataset's own "
+            "calibration, the regime context.md scopes 102 to. Gate evidence for "
+            "G_S (fallback taken), G_D1e and G_D2e."
+        ),
+        "units": "GRID CELLS, not metres",
+        "why_not_metres": (
+            "The metric scale is not recoverable from this dataset: no intrinsics are "
+            "shipped, only 2 of 4 cameras carry the head-plane homography that is the "
+            "metric ruler, and the ground homography's two Zhang constraints are "
+            "mutually inconsistent under a centred principal point (fx=fy leaves the "
+            "spare constraint at 0.30 against 1.0; fx!=fy has no positive solution on "
+            "any camera). See plan-public-demo.md section 10 and deviation-log row 3. "
+            "NO DISTANCE HERE IS COMPARABLE TO ANY METRE-DENOMINATED NUMBER IN THIS REPO."
+        ),
+        "scale_derivation": "ATTEMPTED AND DEAD-ENDED - fallback to grid units taken",
+        "sequence": sequence,
+        "annotated_frames": len(kept),
+        "seconds_between_frames": stride_s,
+        "cameras": len(rig.cameras),
+        "grid": {"w": grid[0], "h": grid[1]},
+        "occupancy": {
+            "mean": float(np.mean(occupancy)),
+            "min": int(np.min(occupancy)),
+            "max": int(np.max(occupancy)),
+        },
+        "gt_identities_in_segment": len(people),
+        "radii_cells": {
+            "birth_cluster": EPFL_BIRTH_CLUSTER_CELLS,
+            "merge": EPFL_MERGE_CELLS,
+            "derived_from": "distinct-person nearest-neighbour p05 = 6.1 cells (EPFL GT)",
+        },
+        "detector": {"weights": str(weights), "imgsz": imgsz, "conf": conf},
+        "embedder": embedder,
+        "seed": seed,
+        "per_view_n_init": 1,
+        "per_view_n_init_why": (
+            "GT is annotated once a second; consecutive boxes do not overlap, so the "
+            "IoU-continuity tracker never confirms at the default n_init=5. Same "
+            "reasoning and same value as cli/eval_wildtrack.py. D-002 consequence "
+            "accepted: the dormant-adoption window is empty at n_init=1."
+        ),
+        "artifacts": {
+            "bev_mp4": {"path": str(mp4), "sha256": _sha256(mp4), "bytes": mp4.stat().st_size},
+            "bev_gif": {"path": str(gif), "sha256": _sha256(gif), "bytes": gif.stat().st_size},
+            "contains_dataset_pixels": False,
+            "note": "BEV canvas only - procedural. Same licence rule as the WILDTRACK arm.",
+        },
+        "arms": {
+            label: {
+                "ids_issued": arms[label]["n_ids_issued"],
+                "ids_shown": arms[label]["ids_shown"],
+                "mean_live_ids_per_frame": arms[label]["mean_live_ids_per_frame"],
+                "id_switches": int(sum(reports[label].id_switches.values())),
+                "mean_position_error_cells": reports[label].mean_position_error_m,
+                "false_positive_tracks": reports[label].false_positive_tracks,
+            }
+            for label in arms
+        },
+    }
+    (ARTIFACTS / "epfl_demo.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    typer.echo(f"\nwrote {mp4} and {gif}")
+    typer.echo(f"wrote {ARTIFACTS / 'epfl_demo.json'}")
+    typer.echo("\n| arm | ids shown | ids/frame | switches | pos err (CELLS) |")
+    typer.echo("|---|---|---|---|---|")
+    for label in ("calibrated", "uncalibrated"):
+        a = summary["arms"][label]
+        typer.echo(
+            f"| {label} | {a['ids_shown']} | {a['mean_live_ids_per_frame']:.1f} | "
+            f"{a['id_switches']} | {a['mean_position_error_cells']:.2f} |"
+        )
+    typer.echo(
+        f"\nground truth: {len(people)} identities, occupancy "
+        f"{summary['occupancy']['min']}-{summary['occupancy']['max']} "
+        f"(mean {summary['occupancy']['mean']:.1f}) -- THE SPARSE REGIME"
+    )

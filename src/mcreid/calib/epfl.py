@@ -68,7 +68,8 @@ class EpflCameraCalibration:
 
     camera_id: str
     H_ground: FloatArray
-    H_head: FloatArray
+    H_head: FloatArray | None
+    """``None`` for the cameras that ship a lone `0` instead of a head matrix."""
 
 
 @dataclass(frozen=True)
@@ -86,38 +87,58 @@ class ScaleEstimate:
 def parse_calibration(path: Path | str) -> list[EpflCameraCalibration]:
     """Read an EPFL `calibration-*.txt` into per-camera homography pairs.
 
-    The format is comment blocks and bare 3x3 matrices, two per camera, ground
-    first. Some cameras are followed by a lone `0` line; it is not part of a
-    matrix and is skipped by only ever consuming rows of three floats.
+    **Split on the file's own `# Camera N` headers, never by counting rows.** The
+    naive reading — six rows per camera, ground then head — is wrong on this file
+    and wrong silently: cameras 2 and 3 ship a lone `0` where their head-plane
+    homography would be, so blind grouping slides cam3's GROUND matrix into cam2's
+    HEAD slot and produces a rig that is subtly, plausibly incorrect rather than
+    obviously broken. That cost a run.
+
+    A camera with no head homography gets ``H_head = None``: it still has a usable
+    ground plane, it just cannot contribute to a metric-scale derivation.
     """
     text = Path(path).read_text(encoding="utf-8", errors="replace")
-    rows: list[list[float]] = []
+    blocks: list[list[list[float]]] = []
+    current: list[list[float]] = []
+    seen_header = False
+
     for line in text.splitlines():
+        if re.match(r"^\s*#\s*Camera\s+\d+", line, flags=re.IGNORECASE):
+            if seen_header:
+                blocks.append(current)
+            current, seen_header = [], True
+            continue
         stripped = line.split("#")[0].strip()
         if not stripped:
             continue
         parts = re.split(r"[\s,]+", stripped)
         if len(parts) != 3:
-            continue
+            continue  # a lone `0` marks an absent matrix; it is not a row
         try:
-            rows.append([float(p) for p in parts])
+            current.append([float(p) for p in parts])
         except ValueError:
             continue
+    if seen_header:
+        blocks.append(current)
+    if not blocks:
+        raise ValueError(f"{path}: no '# Camera N' sections found")
 
-    if len(rows) % 6 != 0:
-        raise ValueError(
-            f"{path}: expected 6 matrix rows per camera (ground + head), got {len(rows)}"
-        )
     out = []
-    for index in range(len(rows) // 6):
-        block = np.asarray(rows[index * 6 : (index + 1) * 6], dtype=np.float64)
+    for index, rows in enumerate(blocks):
+        if len(rows) < 3:
+            raise ValueError(f"{path}: camera {index} has {len(rows)} rows, need at least 3")
+        matrix = np.asarray(rows, dtype=np.float64)
+        head = matrix[3:6].copy() if len(rows) >= 6 else None
         out.append(
             EpflCameraCalibration(
-                camera_id=f"cam{index}",
-                H_ground=block[:3].copy(),
-                H_head=block[3:].copy(),
+                camera_id=f"cam{index}", H_ground=matrix[:3].copy(), H_head=head
             )
         )
+    logger.info(
+        "parsed %d EPFL cameras; %d carry a head-plane homography",
+        len(out),
+        sum(c.H_head is not None for c in out),
+    )
     return out
 
 
@@ -160,6 +181,8 @@ def estimate_cell_size(
     head_plane_m: float = HEAD_PLANE_M,
 ) -> ScaleEstimate:
     """One camera's independent estimate of the grid cell size, in metres."""
+    if calib.H_head is None:
+        raise ValueError(f"{calib.camera_id}: no head-plane homography, so no metric ruler")
     H_g = np.asarray(calib.H_ground, dtype=np.float64)
     H_h = np.asarray(calib.H_head, dtype=np.float64)
 
@@ -226,17 +249,25 @@ def build_rig(
         [[cell_size_m, 0.0, 0.0], [0.0, cell_size_m, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
     )
 
+    # NOMINAL intrinsics, and they are genuinely unused on the path this rig is
+    # for. EPFL ships zero distortion, so `undistort_points` short-circuits and
+    # never touches K, and `image_to_ground` needs only `ground.H`. The focal
+    # below exists to satisfy the schema, NOT as a claim about these cameras —
+    # their intrinsics are exactly what could not be recovered (see the module
+    # note). Anything that starts depending on K here needs a real calibration
+    # first, and will be wrong silently if it does not get one.
+    nominal_focal = float(image_size[0])
+
     cameras = []
     for calib in calibrations:
-        estimate = estimate_cell_size(calib, image_size)
         H_img2world = similarity @ np.linalg.inv(np.asarray(calib.H_ground, dtype=np.float64))
         H_img2world = H_img2world / H_img2world[2, 2]
         cameras.append(
             CameraCalib(
                 camera_id=calib.camera_id,
                 intrinsics=Intrinsics(
-                    fx=estimate.focal_px,
-                    fy=estimate.focal_px,
+                    fx=nominal_focal,
+                    fy=nominal_focal,
                     cx=width / 2.0,
                     cy=height / 2.0,
                     dist_coeffs=[0.0] * 5,
@@ -253,8 +284,9 @@ def build_rig(
                     floor_extent_m=(0.0, 0.0, grid_w * cell_size_m, grid_h * cell_size_m),
                 ),
                 notes=(
-                    f"EPFL CVLab, grid cell {cell_size_m:.4f} m derived from the documented "
-                    f"{HEAD_PLANE_M} m head plane; no distortion shipped"
+                    f"EPFL CVLab, world unit = {cell_size_m} grid cell(s). GRID-METRIC: "
+                    "the metric scale is NOT recoverable from this dataset. Intrinsics "
+                    "are nominal and unused (zero distortion shipped)."
                 ),
             )
         )
@@ -274,7 +306,9 @@ def parse_ground_truth(path: Path | str) -> tuple[dict[int, dict[int, int]], dic
         for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
         if line.strip()
     ]
-    fields = [int(v) for v in re.split(r"\s+", lines[0])]
+    # The file opens with a lone version/format line before the real header.
+    offset = 1 if len(re.split(r"\s+", lines[0])) < 5 else 0
+    fields = [int(v) for v in re.split(r"\s+", lines[offset])]
     header = {
         "n_frames": fields[0],
         "n_people": fields[1],
@@ -283,7 +317,7 @@ def parse_ground_truth(path: Path | str) -> tuple[dict[int, dict[int, int]], dic
         "fps": fields[4],
     }
     positions: dict[int, dict[int, int]] = {}
-    for frame, line in enumerate(lines[1:]):
+    for frame, line in enumerate(lines[offset + 1 :]):
         values = [int(v) for v in re.split(r"\s+", line)]
         present = {person: value for person, value in enumerate(values) if value >= 0}
         if present:
