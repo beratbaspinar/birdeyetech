@@ -141,3 +141,76 @@ The guard cost the demo its most legible view and it was not negotiated with.
 - **G_D2's failure is a real result about the crowd regime, not about calibration.** Reading it as
   "calibration does not work" would be exactly the over-generalisation the scope lock exists to
   prevent.
+
+---
+
+# Addendum — arm 2 attempted on operator order (2026-08-10, later)
+
+**Operator: proceed with arm 2, derive the scale, no guessing.** Done, and the answer is negative
+in a way worth having.
+
+## The scale derivation DEAD-ENDS, on evidence
+
+Validation was pre-registered in `plan-public-demo.md` §10 **before the number was computed** — V1
+four independent per-camera estimates within 5 %, V3 an independent physical check against walking
+speed off the ground truth. Neither could be satisfied, for reasons that are properties of the
+data:
+
+| finding | consequence |
+|---|---|
+| **Only 2 of 4 cameras ship a head-plane homography.** Cameras 2 and 3 write a lone `0`. | The 1.75 m ruler exists for at most two cameras, so V1's "four independent estimates" is unobtainable |
+| Under `fx = fy`: the **spare Zhang constraint gives ‖r1‖/‖r2‖ = 0.30** against a required 1.0, and cam0 has no positive solution at all | **V2 fails.** The assumption set is refuted, not merely unconfirmed |
+| Under `fx ≠ fy` (exactly determined, no spare check left): **no camera has a positive solution** | The relaxation does not rescue it |
+
+The underlying reason is an identifiability result rather than a missing effort: **the 1.75 m
+ruler is vertical and the cell size is horizontal, and transferring one to the other requires the
+camera's internals.** EPFL ships no intrinsics, and recovering them from a single plane homography
+needs the principal point, which for 2008 DV cameras cropped to 360×288 is not at the image centre.
+No amount of further work extracts a metric scale from this data without either intrinsics or a
+known ground distance, and the dataset provides neither.
+
+**Fallback taken, as the operator specified:** grid units, radii **re-derived not converted**
+(`reports/deviation-log.md` row 3 — a conversion would need the scale we just established does not
+exist), and the arm labelled **grid-metric**.
+
+## And then the arm did not work, so nothing from it ships
+
+The fallback is implemented and the run completes. It reports **0 identities in both arms**, so its
+artifacts were **deleted rather than committed** and the README is untouched. A BEV of an empty
+floor is a demo of nothing, and the sparse hero does not exist.
+
+Three defects were found and fixed on the way; the first is the kind that ships silently:
+
+1. **The calibration parser grouped rows six at a time**, which slid cam3's *ground* matrix into
+   cam2's *head* slot, because cameras 2 and 3 write a lone `0` instead of a head matrix. That
+   yields a rig that is subtly wrong rather than obviously broken. Now split on the file's own
+   `# Camera N` headers — and the corrected parse is what revealed the 2-of-4 fact above.
+2. The GT header sits on line 2, behind a lone version line.
+3. `n_init = 5` can never confirm on ground truth annotated **once a second**: consecutive boxes do
+   not overlap at all. It is 1 here, the same value and reasoning `cli/eval_wildtrack.py` already
+   documents, with D-002's consequence stated rather than discovered later.
+
+Detection was never the problem — 0.86–0.92 confidence, one detection per ground-truth person.
+
+**What is still wrong is localised**: the grid ↔ top-view ↔ world convention chain. The
+homographies' domain is the **358×360 top-view image**, not the 56×56 grid (verified: the top-view
+centre maps inside the camera image; the grid centre does not). A detected foot at pixel (285, 165)
+currently lands at world (331.8, 231.3) where the ground truth says cell (37, 17) — **off by a
+non-constant factor, so a convention error and not a scale one.**
+
+**And the fix has a gate available that needs no new data**, which is the actual lesson: project
+every GT cell through every ground homography and require it to land inside the 360×288 image for
+the cameras that should see it, across all 115 annotated frames. Unit-free, unambiguous, and it
+fails loudly on exactly this class of error. The scale derivation had a pre-registered check and
+was stopped correctly the moment it failed; the *rig construction* had none, and that is why it
+produced a plausible-looking rig and an empty demo instead of an error. Blockers row filed.
+
+## Standing after the addendum
+
+- **Arm 1 (WILDTRACK)**: rejected on G_D2, ships anyway as the honest crowd demo. Unchanged.
+- **Arm 2 (EPFL)**: attempted, scale derivation dead-ended, fallback taken, **build incomplete —
+  0 identities, nothing shipped**. Not a G_D1e/G_D2e failure, because neither gate was ever
+  reached: the run does not produce a result to gate.
+- **Kill counter: 1 of 2, unchanged.** Arm 2 has still not been *rejected* — it has not produced a
+  measurement to reject.
+- The demo that ships is still the WILDTRACK one, with the README exactly as it was.
