@@ -1,0 +1,30 @@
+{
+  "what_this_measures": "D-014's pattern re-run on the segment that actually ships: identity persistence with the dataset's calibrated geometry versus appearance-only fusion. Identical frames, identical detections, identical embedder; the only difference is whether geometry is allowed to speak. Gate evidence for G_D2.",
+  "segment": {
+    "name": "wildtrack-sparsest-40",
+    "start_slot": 311,
+    "n_frames": 40,
+    "first_frame": 1555,
+    "last_frame": 1750,
+    "why": "sparsest 40-frame window in WILDTRACK: mean 15.6 people/frame, min 13, max 19, every one of them visible in >=2 cameras. The dataset's floor over all 400 annotated frames is 13 people, so no sparser segment exists to pick."
+  },
+  "gt_identities_in_segment": 27,
+  "arms": {
+    "calibrated": {
+      "ids_issued": 348,
+      "ids_shown": 95,
+      "mean_live_ids_per_frame": 46.25,
+      "id_switches": 11,
+      "mean_position_error_m": 0.14075749305326374,
+      "false_positive_tracks": 68
+    },
+    "uncalibrated": {
+      "ids_issued": 909,
+      "ids_shown": 1,
+      "mean_live_ids_per_frame": 0.9,
+      "id_switches": 0,
+      "mean_position_error_m": 0.6379012881376028,
+      "false_positive_tracks": 0
+    }
+  }
+}

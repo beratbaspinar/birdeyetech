@@ -1,0 +1,42 @@
+{
+  "what_this_is": "the shipped demo run: WILDTRACK's own calibration, the sparsest segment it contains, calibrated geometry fusion end to end. Gate evidence for G_D1.",
+  "honest_scope": "This is the CROWD regime, not the sparse hero regime. WILDTRACK's sparsest 40-frame window averages 15.6 people/frame and its floor over all 400 annotated frames is 13. context.md scopes 102 to one-to-a-handful of people in a room; no segment of this dataset is that.",
+  "segment": {
+    "name": "wildtrack-sparsest-40",
+    "start_slot": 311,
+    "n_frames": 40,
+    "first_frame": 1555,
+    "last_frame": 1750,
+    "why": "sparsest 40-frame window in WILDTRACK: mean 15.6 people/frame, min 13, max 19, every one of them visible in >=2 cameras. The dataset's floor over all 400 annotated frames is 13 people, so no sparser segment exists to pick."
+  },
+  "calibration_source": "WILDTRACK's own intrinsics/extrinsics, via mcreid.eval.wildtrack.load_rig",
+  "cameras": 7,
+  "people_per_frame": {
+    "mean": 15.6,
+    "min": 13,
+    "max": 19
+  },
+  "gt_identities_in_segment": 27,
+  "detector": {
+    "weights": "weights\\yolo11x.pt",
+    "imgsz": 1280,
+    "conf": 0.25
+  },
+  "embedder": "osnet_x1_0_msmt17",
+  "seed": 42,
+  "median_ms_per_frame_all_cameras": 1258.4978500090074,
+  "artifacts": {
+    "bev_mp4": {
+      "path": "docs\\assets\\public_demo_bev.mp4",
+      "sha256": "fd18575b6c320b7669ea759c58455aabd8bdd4b69e9fe6205fe003d0b7c62d94",
+      "bytes": 1029112
+    },
+    "bev_gif": {
+      "path": "docs\\assets\\public_demo_bev.gif",
+      "sha256": "3cdddb0c5bc075304ed77f7324f91a46ad052fae99acdcf1a90b3f159f504c67",
+      "bytes": 1193498
+    },
+    "contains_dataset_pixels": false,
+    "note": "BEV canvas only \u2014 procedural floor grid, identity dots, camera frusta. Per-camera overlays are NOT exported here: rendering WILDTRACK frames into a shippable asset would be committing the dataset (CLAUDE.md)."
+  }
+}
