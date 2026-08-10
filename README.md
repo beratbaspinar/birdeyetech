@@ -18,10 +18,49 @@ and none of them has seen any evaluation data used here. The fusion is geometric
 *The regime this project is actually for: **1–5 people in a room**
 (mean 2.6), four cameras, 60 seconds, the dataset's own
 calibration. [EPFL CVLab's Laboratory sequence](https://www.epfl.ch/labs/cvlab/data/data-pom-index-php/) —
-real public footage, fused onto one floor plan. Rebuild it with one command:
-[Quickstart](#quickstart).*
+real public footage, fused onto one floor plan.*
 
-> **Two honest labels on this, and both matter.**
+### ▶ Start here: render the composite, not the map
+
+**A floor plan alone is not evidence.** It shows dots and asks you to accept that
+the dots are the people in the footage, and that the number over a dot is the same
+number that was over that person in each camera. The artifact that actually shows
+that is the **composite**: every camera view that produced the run, side by side,
+with the same integer in the same colour over the same human in each panel, and
+the floor plan as the final panel.
+
+**It cannot ship** — every frame of it is dataset footage, and this repo does not
+redistribute either dataset (the terms are in [Licence](#licence); neither grants
+redistribution). So it is *generated*, by the same command that produced the GIF
+above:
+
+```bash
+uv run mcreid-public-demo epfl --stages all
+```
+
+That writes four videos into gitignored `reports/epfl_demo/`, one per overlay
+stage, all from one renderer:
+
+| stage | what it adds | what it is for |
+|---|---|---|
+| `raw` | the four camera views, untouched | what the system is given |
+| `boxes` | detection + per-view tracking, in **each camera's** colour | what one camera alone buys you — no claim across views |
+| `ids` | the **global ID**, in that identity's colour | the only place a cross-camera claim is made |
+| `composite` | + the BEV floor plan as the final panel | the claim and the map, in one frame |
+
+**What it measures about itself**, from `docs/artifacts/epfl_demo.json`
+(gate **G_D4**): a single identity is drawn in **two or more camera panels on
+39 of 60 frames**, in **0** conflicting colours. Both numbers are non-vacuous —
+`tests/test_viz_composite.py` carries the controls proving each can come out
+wrong.
+
+**And it is deliberately less impressive than it could be.** The panels label only
+identities the fusion stage actually put on the map; **115 assigned boxes** across
+the run are drawn grey and unlabelled because their track was still tentative. A
+number over a person with no dot beside it on the plan would be the composite
+contradicting the one thing it exists to demonstrate.
+
+> **Two honest labels on the map above, and both matter.**
 >
 > **It is GRID-METRIC, not metric.** EPFL ships homographies onto a discretised
 > 56×56 top-view grid and no camera intrinsics. The metric scale is not merely
@@ -29,10 +68,13 @@ real public footage, fused onto one floor plan. Rebuild it with one command:
 > on offer is a *vertical* 1.75 m head plane, only 2 of the 4 cameras carry it,
 > and transferring a vertical length to a horizontal ground distance needs the
 > camera internals. So every distance below is in **grid cells**, and none of them
-> is comparable to a metre-denominated number anywhere else in this repo.
+> is comparable to a metre-denominated number anywhere else in this repo. The
+> canvas prints `grid cells` for exactly this reason.
 >
-> **It is the BEV only**, for the same licence reason as the crowd demo below: a
-> GIF rendered from the dataset's frames would be redistributing the dataset.
+> **It is the BEV only**, for the licence reason above: the BEV canvas is
+> procedural — floor grid, identity dots, camera frusta, and `render()` takes no
+> image argument at all, so a dataset pixel cannot reach it. That is a structural
+> guarantee rather than a promise, and there is a test asserting the signature.
 
 **The transform chain is instrument-proved before any identity number is read**
 (`scripts/check_epfl_instrument.py`, the §3 G0 pattern): 96.4%
@@ -75,12 +117,27 @@ fused onto one metric floor plan: every dot is a global identity, held across
 cameras by geometry plus appearance. Rebuild it with one command —
 [Quickstart](#quickstart).*
 
+**The composite for this arm is one command too**, and here it is worth watching
+precisely because it is ugly:
+
+```bash
+uv run mcreid-public-demo wildtrack --stages all
+```
+
+Seven camera panels plus the floor plan. An identity spans two or more panels on
+**36 of 40 frames** with **0** colour conflicts — the fusion works — and the
+labels still congest into an unreadable mat, which is what 15.6 people per frame
+looks like and is the honest picture of the over-segmentation the numbers below
+report. No crowd-thinning rule was added to the panels: it would hide the exact
+congestion that is the finding.
+
 > **What you are looking at, stated exactly.** This is the **bird's-eye view
 > only**, and that is a licence decision rather than a stylistic one: a GIF
 > rendered from WILDTRACK frames would be redistributing the dataset, which this
 > repo does not do. The BEV canvas is procedural — floor grid, identity dots,
-> camera frusta — so it carries no dataset pixels. Per-camera overlays are
-> rendered by the same command and stay local.
+> camera frusta — so it carries no dataset pixels. The composite above renders
+> real frames and therefore stays in gitignored `reports/`; the writer refuses
+> any destination under `docs/`.
 >
 > **And it is a crowd, which is not what this project claims.** The segment shown
 > is the *sparsest 40-frame window WILDTRACK contains* and it still averages
@@ -455,12 +512,18 @@ uv run python scripts/check_epfl_instrument.py
 ```
 
 ```bash
-uv run mcreid-public-demo epfl
+uv run mcreid-public-demo epfl --stages all
 ```
 
-The middle command is not optional decoration: it is the instrument proof, and it
-fails loudly if the transform chain is wrong. Run it before you believe any number
-from the third.
+Three steps, in this order: **download data → instrument proof → render the
+composite.** The middle command is not optional decoration — it is the instrument
+proof, and it fails loudly if the transform chain is wrong. Run it before you
+believe any number from the third.
+
+The third writes the shippable BEV into `docs/assets/` and the four stage videos
+into gitignored `reports/epfl_demo/`. Drop `--stages all` for the composite alone;
+`--no-composite` skips it entirely. The composite is never committed, for the
+reason in [Licence](#licence).
 
 ### The crowd demo (the second GIF)
 
@@ -940,3 +1003,26 @@ Third-party data and weights are **not** redistributed here. WILDTRACK is
 obtained from EPFL CVLab under their terms via `scripts/download_wildtrack.py`;
 OSNet weights are fetched from the authors and SHA-256 pinned. No dataset
 frames, and no renders derived from them, are committed to this repository.
+
+### Why the composite is generated and never hosted
+
+The composite videos are the most useful artifact this project produces and they
+are also the one thing it cannot publish. Both dataset pages were read for this,
+2026-08-10, and neither grants redistribution:
+
+| dataset | what its page actually says | can a derived clip be hosted? |
+|---|---|---|
+| [EPFL CVLab Laboratory](https://www.epfl.ch/labs/cvlab/data/data-pom-index-php/) | *"All videos, calibration and ground truth files available on this page are copyrighted by CVLab – EPFL. You can use them for research purposes."* Citation required. Derived works are not addressed. | **No.** A grant to *use* is not a grant to *redistribute*, and silence on derivatives is not permission. |
+| [WILDTRACK](https://www.epfl.ch/labs/cvlab/data/data-wildtrack/) | **No licence text at all** — no named licence, no copyright statement, no redistribution terms. Citation requested; `scripts/download_wildtrack.py` records a manual request/consent step. | **No.** Absent terms are not permissive terms. |
+
+So there is no hosting route to propose — not a GitHub release asset, not a
+README-linked mirror. What ships instead is the procedural BEV, a description of
+what the composite shows, and the one command that renders it locally in about
+three seconds of render time on top of the run.
+
+The guard is structural rather than editorial:
+`mcreid.viz.composite.assert_generated_only` **raises** on any destination under
+`docs/`, the repo's only tracked asset tree, and it resolves the path first so a
+`..` cannot walk past it. The committed results JSON carries the composite's
+SHA-256 and `contains_dataset_pixels: true` beside the BEV's
+`contains_dataset_pixels: false` — the metric record ships, the pixels do not.
