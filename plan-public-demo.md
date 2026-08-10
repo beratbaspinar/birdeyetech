@@ -190,3 +190,79 @@ distance in the fusion stage, and every threshold in this repo is in metres.
 | 2 | Hero artifact format | GIF / MP4 / both | **BEV MP4 for watching + BEV GIF for the README.** Both procedural, both license-clean |
 | 3 | Uncalibrated arm's definition | no geometry at all / geometry radii opened globally | **Appearance-only fusion (geometry disabled)** — it is what D-007/D-008 measured and what `--geometry-only`'s mirror image already supports; no new mechanism |
 | 4 | Arm 2 dataset | PhysicalAI MTMC_2024 / EPFL Laboratory | **EPFL Laboratory**, §1 |
+
+---
+
+## 10. Arm 2 — the grid-to-metres derivation (amendment, 2026-08-10, operator order)
+
+**Operator call: proceed with arm 2, derive the scale, no guessing.** This section is written
+**before the number is computed**, which is the only thing that makes the checks below evidence
+rather than decoration.
+
+### The derivation
+
+EPFL ships two homographies per camera, both mapping the **same** 56×56 top-view grid into the
+image: `H_g` onto the floor, `H_h` onto a plane the dataset documents as **exactly 1.75 m** higher.
+That documented height is the metric ruler; everything else is geometry.
+
+Write the grid→world map as a similarity with unknown cell size `s`. Then
+
+```
+H_g ∝ K [ s·r1 , s·r2 , x0·r1 + y0·r2 + t ]
+H_h ∝ K [ s·r1 , s·r2 , x0·r1 + y0·r2 + t + h·r3 ]      h = 1.75 m
+```
+
+Normalise the pair so their first two columns coincide; the third columns then differ by exactly
+`d = h·K·r3`. With `B = K⁻¹H_g`, `‖B[:,0]‖ = ‖B[:,1]‖ = s` and `‖K⁻¹d‖ = h`, so
+
+```
+s  =  1.75 · ‖K⁻¹·H_g[:,0]‖ / ‖K⁻¹·d‖        metres per grid cell
+```
+
+`K` is not shipped, so it is recovered from the ground homography's own Zhang constraints —
+`r1 ⊥ r2` and `‖r1‖ = ‖r2‖` — under the standard reduction (zero skew, square pixels, principal
+point at the image centre), which leaves **one unknown, the focal length, against two constraints**.
+One constraint solves it; **the other is spare, and spare is what a check is made of.**
+
+### Pre-registered validation — stated now, computed after
+
+The scale is accepted only if **V1 and V3 both pass**. V2/V4/V5 are reported and inform the
+verdict but do not gate it on their own.
+
+| # | check | passing | why it can fail |
+|---|---|---|---|
+| **V1** | **Four cameras, four independent estimates of `s`.** Each camera has its own optics and its own homography pair; nothing couples them but the room. | **coefficient of variation < 5 %**, and all four reported | If the model is wrong the four disagree. This is the check that cannot be argued with |
+| **V2** | The spare Zhang constraint: implied `‖r1‖/‖r2‖` per camera | within 5 % of 1.0 | Catches a bad focal recovery, i.e. the assumptions failing |
+| **V3** | **Physical invariant from the shipped ground truth**: p95 per-person walking speed over all 6 people, converted with the derived `s` | **inside [0.1, 3.0] m/s** | A scale wrong by 10× moves this by 10×. Human walking is ~1.4 m/s and this is a dataset of people walking around a room |
+| **V4** | Recovered camera heights above the floor | inside [1.5, 4.0] m | An indoor lab |
+| **V5** | Room extent, `56 · s` | inside [3, 15] m | A room, not a stadium |
+
+**V3 is the one that makes this a derivation rather than a self-consistent story**: V1 and V2 only
+say the geometry is coherent, and a coherent geometry at the wrong scale would pass both. V3 brings
+in an independent physical fact — how fast people walk — measured off the dataset's own ground
+truth, which no part of the derivation touches.
+
+`scripts/check_demo_gates.py --gate g_scale` is the arbiter and reads
+`docs/artifacts/epfl_grid_scale.json`.
+
+### If it dead-ends — evidence, not effort
+
+**V1 or V3 failing is a dead-end.** Running out of patience is not. On a genuine dead-end the
+fallback is the operator's: **rescale the fusion thresholds into grid units for this arm only**,
+with every threshold re-derived from its own original derivation rather than renamed — a 0.35 m
+radius becomes `0.35 / s` cells only if `s` is known, so in the fallback each threshold is instead
+re-derived from what it was *for* (body width, stride length, the measured cross-camera
+disagreement) expressed in cells. The demo is then labelled **"grid-metric"** in the README and the
+artifact, not "metric", and the report names the fallback as taken. Any threshold touched is a
+dated `reports/deviation-log.md` row with the authority named.
+
+### Gates for arm 2
+
+| # | Gate | Command | Passing |
+|---|---|---|---|
+| G_S | the scale derivation and its validation | `uv run python scripts/check_demo_gates.py --gate g_scale` | V1 and V3 pass; all five reported |
+| G_D1e | demo runs end to end on EPFL Laboratory with the dataset's own calibration, BEV artifact | `uv run mcreid-public-demo epfl` | exit 0; artifact + sha256 recorded |
+| G_D2e | calibrated vs appearance-only on the EPFL segment | `uv run python scripts/check_demo_gates.py --gate g_d2e` | **same two conditions as G_D2, unchanged**: identity count closer to truth, and no worse on switches |
+
+G_D2e's conditions are copied from G_D2 verbatim rather than re-tuned for a dataset where they
+might pass more easily. That is the point of them.
