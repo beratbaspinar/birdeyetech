@@ -64,8 +64,19 @@ htmlcov/
 /logs/
 /results/
 /runs/
-# Calibration reports embed frames of my room — same class as footage.
-/reports/
+# Calibration reports embed frames of my room — same class as footage, so the
+# directory is excluded wholesale. `/reports/*` rather than `/reports/`, because
+# git never descends into an excluded DIRECTORY and a `!` line under it would be
+# silently inert.
+/reports/*
+# The method's own artifacts live here (refactored_method.md §2/§3/§4) and are
+# text about process, not pixels of the room. Whitelisted by EXACT FILENAME, never
+# by glob — the `!docs/assets/*.gif` incident is why. A new one needs its own line,
+# and needs reading before it gets one.
+!/reports/c0_findings.md
+!/reports/deviation-log.md
+!/reports/blockers.md
+!/reports/method_compliance_2026-08-09.md
 *.log
 
 # --- internal working logs (local only, deliberately untracked) ---
