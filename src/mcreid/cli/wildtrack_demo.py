@@ -23,6 +23,7 @@ from mcreid.fusion.global_id import FusionConfig, GlobalIDManager
 from mcreid.fusion.types import TrackState, ViewObservation
 from mcreid.track.gpu_view import GpuPerViewBackend, GpuViewConfig
 from mcreid.track.reid_models import DEFAULT_EMBEDDER
+from mcreid.utils.device import probe_compute_device
 from mcreid.utils.logging import get_logger, setup_logging
 from mcreid.utils.seed import DEFAULT_SEED, seed_everything
 from mcreid.viz.bev import BevRenderer
@@ -90,12 +91,20 @@ def render(
     gif_max_mb: float = typer.Option(15.0, help="Hard size ceiling for the GIF."),
     embedder: str = typer.Option(DEFAULT_EMBEDDER),
     weights: Path = typer.Option(Path("weights/yolo11x.pt")),
+    device: str = typer.Option("auto", help="Compute device: auto | cpu | cuda | cuda:N."),
+    allow_cpu: bool = typer.Option(
+        False,
+        help="Run even if the environment probe resolves to CPU. Off by default (§5).",
+    ),
     seed: int = typer.Option(DEFAULT_SEED),
     log_level: str = typer.Option("INFO"),
 ) -> None:
     """Run the tracker and export a watchable demo video plus a README GIF."""
     setup_logging(log_level)
     seed_everything(seed)
+    # §5: same cost class as `mcreid-wildtrack run` — detector plus embedder over
+    # n_frames x 3 cameras, then a video and a GIF encode on top.
+    probe_compute_device(device, "mcreid-wildtrack-demo", allow_cpu=allow_cpu)
     if not root.is_dir():
         raise typer.BadParameter(f"{root} not found")
 
@@ -115,7 +124,7 @@ def render(
 
     backends = {
         camera_id: GpuPerViewBackend(
-            camera_id, GpuViewConfig(weights=weights, embedder=embedder)
+            camera_id, GpuViewConfig(weights=weights, embedder=embedder, device=device)
         )
         for camera_id in chosen
     }
