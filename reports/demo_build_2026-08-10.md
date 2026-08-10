@@ -377,3 +377,139 @@ criterion on a tie is as much a distortion as softening one on a result I like.
 The honest one-line summary of the project's state: **the geometry works in the regime the project
 claims, on real public footage, and it is the identity bookkeeping over long runs — not the
 geometry — that is still weak.** 27 switches over 60 frames says so, and the README says it too.
+
+---
+
+# Addendum 4 — the composite demo, and the licence answer (2026-08-10, session close)
+
+**Operator: "the demo is not legible without its inputs — every demo must show the RGB camera
+views that produced it, not the BEV alone."** Built, run on both arms, gated. **G_D4 PASSES.**
+
+## Why a BEV alone was never evidence
+
+A floor plan shows dots and asks the reader to accept three things on faith: that the dots are
+people, that they are the people in the footage, and that the number over a dot is the number that
+was over that person in each camera. **Only the third is the project's actual claim, and the BEV is
+the one view that cannot show it.** The composite can: N camera panels with boxes and global-ID
+labels, the same integer in the same colour over the same human in every panel that sees them, and
+the floor plan as the final panel.
+
+## One renderer, four stages — not four pipelines
+
+`src/mcreid/viz/composite.py`. The stages are cumulative and come out of one code path, so a
+single-stage video is an *excerpt* of the composite rather than a second pipeline that can drift
+from it:
+
+| stage | adds | why it is its own stage |
+|---|---|---|
+| `raw` | nothing | what the system is given |
+| `boxes` | boxes in **each camera's** colour | what one camera alone buys — and colouring by identity here would show the answer one stage early |
+| `ids` | the global ID in that identity's colour | the only place a cross-camera claim is made |
+| `composite` | + the BEV as the final panel | the claim and the map in one frame |
+
+Layout is an aspect-scored grid packing, measured as a **log ratio** so twice-too-wide and
+twice-too-tall cost the same: 4 cameras of 5:4 frames give 2x2, and 7 cameras of 16:9 frames give
+3x3 with two blanks rather than the 4x2 letterbox a linear score would have chosen.
+
+## The result, both arms, on the 4060
+
+| | EPFL (sparse hero) | WILDTRACK (crowd) |
+|---|---|---|
+| panels | 4 cameras + BEV | 7 cameras + BEV |
+| frames rendered | 60/60 | 40/40 |
+| an ID drawn in >= 2 camera panels | **39 of 60 frames** | **36 of 40 frames** |
+| ID colour conflicts | **0** | **0** |
+| render cost | 12.4 ms/frame | 37.9 ms/frame |
+
+**NO IDENTITY METRIC MOVED.** Both arms reproduce their previous numbers exactly — EPFL
+9 / 3.2 / 27 / 1.72 vs 1 / 0.9 / 0 / 1.68, WILDTRACK 95 / 46.2 / 11 / 0.141 vs 1 / 0.9 / 0 / 0.638.
+That is the point: the composite is rendered beside the pipeline and timed separately from it, so
+it cannot inflate the FPS claim this project makes elsewhere.
+
+## Two defects the composite found, which is the argument for building it
+
+Neither was visible in the BEV alone, and both were on the **shipped front page**.
+
+1. **The hero artifact printed the wrong unit.** `BevRenderer` hard-coded `BEV (metres)` and
+   `2 m grid`. The EPFL arm is grid-metric — its scale is *unidentifiable* from the dataset
+   (deviation-log row 3) — so the README's first image carried a unit the prose beside it
+   correctly denied. `units` is now a parameter; the arm passes `"grid cells"`.
+2. **The panels labelled identities the map did not carry.** The fusion stage assigns a global ID
+   to a per-view observation before it commits that track to the floor plan, so a person could
+   wear ID 16 in three camera panels with no dot for 16 on the map beside them — the composite
+   contradicting the one thing it exists to demonstrate. Fixed by passing the frame's live IDs:
+   an assigned-but-uncommitted box is drawn grey, unlabelled, **and counted**.
+
+   **The count is itself a finding: 115 of 340 assigned boxes on the EPFL run belong to tracks
+   that never reached the map.** It costs the demo something visible — cross-panel frames fell
+   47 -> 39 — and that is the honest number rather than the flattering one.
+
+## The gate, and why its licence clause runs backwards from G_D1's
+
+G_D4 checks the two things a pretty video cannot fake — every camera that fed the run has a panel,
+and an identity in two panels is in **one** colour — plus existence, hash, and a runtime bound
+labelled a sanity check rather than an FPS claim.
+
+Its licence clause asserts in the **opposite direction to G_D1's**, and the pair is the whole
+position in machine-readable form:
+
+- the BEV must declare `contains_dataset_pixels: false`, **because it ships**;
+- the composite must declare `contains_dataset_pixels: true` **and** `committed: false`, because
+  that is precisely why it does not.
+
+Both aggregate numbers are non-vacuous, and `tests/test_viz_composite.py` carries a **control for
+each** — one record that colours by camera (caught), one where no ID spans two panels (reported as
+zero). Without them, "colour-consistent" could be reported by a checker incapable of returning
+anything else, which is the degenerate-gate failure this project already has a paper trail of.
+
+## The guard was not weakened, and it moved into code
+
+Composites are dataset pixels by construction. `assert_generated_only` **raises** on any
+destination under `docs/`, resolving the path first so a `..` cannot walk past it, and the check
+runs in `StageWriter.__init__` — before a frame exists — so a bad path fails in the first second of
+a run rather than after the detector has been over every frame. This is the same structural move as
+`BevRenderer.render` taking no image argument, and there is now a test asserting that signature too.
+
+One thing caught late and worth recording: the writer originally stored the **resolved** path,
+which put an absolute `C:\Users\<name>\...` into a **committed** JSON in a **public** repo — exactly
+what session 3K's audit checks for by name. It now keeps the path as given and checks the resolved
+one.
+
+## The licence answer: no hosting route exists
+
+Both dataset pages were read for this, today, rather than assumed:
+
+| dataset | what the page actually says | derived clips redistributable? |
+|---|---|---|
+| EPFL CVLab (Laboratory) | *"All videos, calibration and ground truth files available on this page are copyrighted by CVLab - EPFL. You can use them for research purposes."* Citation required; derivatives not addressed. | **No.** A grant to *use* is not a grant to *redistribute*, and silence on derivatives is not permission. |
+| WILDTRACK | **No licence text at all** — no named licence, no copyright statement, no redistribution terms. Citation requested; the download path carries a manual request/consent step. | **No.** Absent terms are not permissive terms. |
+
+So the conditional in the brief resolves to its second branch and **no blockers row was filed**:
+there is nothing for the operator to approve, because there is no defensible hosting route to
+propose — not a release asset, not a README-linked mirror. What ships is the procedural BEV, a
+description of what the composite shows, and the one command that renders it. Findings are in the
+README's Licence section with the wording quoted, so a reader can check the reasoning rather than
+take the conclusion.
+
+## What the crowd composite is for, stated plainly
+
+It is worth watching *because it is ugly*. The fusion works — an ID spans panels on 36 of 40
+frames — and the labels still congest into an unreadable mat, which is what 15.6 people per frame
+looks like and is the honest picture of the over-segmentation the WILDTRACK table reports. **No
+crowd-thinning rule was added to the panels**, deliberately: the BEV has one, and adding it here
+would hide the exact congestion that is the finding.
+
+## Standing at session close
+
+| | |
+|---|---|
+| **G_D4** composite, both arms | **PASS** — 11 checks per arm |
+| G_D1 / G_D1e / G_D3 | PASS, unchanged |
+| G_D2 (crowd) | FAIL, unchanged — the honest crowd result |
+| G_D2e (sparse) | FAIL on clause 1's tie, unchanged; counter **1 of 2** per the operator's ruling |
+| Tests | **585 green** (was 560), ruff + mypy clean |
+| Composite videos | 8 files, gitignored `reports/`, hashes in the committed JSON, **never committed** |
+
+Two stale files were left in place rather than deleted: `reports/epfl_demo/epfl_6p_composite_*.mp4`
+from the first run, before the filename prefix was shortened. They are gitignored and harmless, and
+deleting files is an operator-approval item.
