@@ -1,0 +1,21 @@
+{
+  "what_this_proves": "the EPFL transform chain (calibration parse -> homography direction -> top-view scaling -> world) is self-consistent with the dataset's own ground truth, BEFORE any identity number is trusted. G0 pattern, refactored_method.md section 3.",
+  "units": "grid cells",
+  "A_coverage": {
+    "annotated_positions": 476,
+    "min_cameras_required": 2,
+    "fraction_seen_by_enough_cameras": 0.9642857142857143,
+    "required": 0.8,
+    "mean_cameras_seeing": 3.310924369747899,
+    "pass": true
+  },
+  "B_agreement": {
+    "n_detections": 95,
+    "median_cells_to_nearest_gt": 2.015191495443201,
+    "max_allowed_cells": 3.0,
+    "why_that_bound": "it is the birth-cluster radius the fusion stage uses; a projection error above the radius that decides 'same person' makes every downstream identity claim arbitrary",
+    "reference_distinct_person_separation_cells_p50": 10.6,
+    "pass": true
+  },
+  "pass": true
+}

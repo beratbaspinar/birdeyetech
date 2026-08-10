@@ -13,6 +13,56 @@ rather than left out: see [Stress test](#stress-test--where-this-breaks-and-why)
 someone else — YOLO11x on COCO for detection, OSNet on MSMT17 for appearance —
 and none of them has seen any evaluation data used here. The fusion is geometric.
 
+![sparse demo — BEV from EPFL Laboratory](docs/assets/epfl_demo_bev.gif)
+
+*The regime this project is actually for: **1–5 people in a room**
+(mean 2.6), four cameras, 60 seconds, the dataset's own
+calibration. [EPFL CVLab's Laboratory sequence](https://www.epfl.ch/labs/cvlab/data/data-pom-index-php/) —
+real public footage, fused onto one floor plan. Rebuild it with one command:
+[Quickstart](#quickstart).*
+
+> **Two honest labels on this, and both matter.**
+>
+> **It is GRID-METRIC, not metric.** EPFL ships homographies onto a discretised
+> 56×56 top-view grid and no camera intrinsics. The metric scale is not merely
+> unknown, it is **unidentifiable** from what the dataset provides: the only ruler
+> on offer is a *vertical* 1.75 m head plane, only 2 of the 4 cameras carry it,
+> and transferring a vertical length to a horizontal ground distance needs the
+> camera internals. So every distance below is in **grid cells**, and none of them
+> is comparable to a metre-denominated number anywhere else in this repo.
+>
+> **It is the BEV only**, for the same licence reason as the crowd demo below: a
+> GIF rendered from the dataset's frames would be redistributing the dataset.
+
+**The transform chain is instrument-proved before any identity number is read**
+(`scripts/check_epfl_instrument.py`, the §3 G0 pattern): 96.4%
+of the 476 annotated positions are seen by ≥ 2 cameras, and a
+detected foot point lands a median **2.02 cells**
+from the nearest annotated person — against a 3.0-cell bound that *is* the fusion stage's
+birth-clustering radius. That check exists because an earlier version of this rig shipped a
+homography applied in the wrong direction and produced a demo of an empty floor.
+
+| on 5 real people, occupancy 1–5 | calibrated | appearance-only |
+|---|---|---|
+| **live identities per frame** (truth ≈ 2.6) | **3.2** | 0.9 |
+| distinct identities over the run | 9 | 1 |
+| ID switches | 27 | 0 |
+| mean position error | 1.72 cells | 1.68 cells |
+| false-positive tracks | 0 | 0 |
+
+**Read it honestly, including the part that fails.** With geometry the system holds
+3.2 identities against 2.6 real people and invents
+none. Without it, appearance-only fusion **collapses the whole room into a single identity** — the
+mechanism D-008 measured, where averaging appearance drags every identity toward the population
+centroid. But the calibrated arm also churns: **27 ID switches over
+60 frames** for 5 people, because this ground
+truth is annotated once a second and a person crosses several cells between frames. **The formal
+gate (G_D2e) FAILS**, and the report says why the failure is partly the gate's own fault: an arm
+that collapses to one identity has zero switches by construction, so no working design can win
+that clause. `reports/demo_build_2026-08-10.md`.
+
+### The crowd case — measured failure analysis, not a claim
+
 ![real-data demo — BEV from WILDTRACK](docs/assets/public_demo_bev.gif)
 
 *Real public data, the dataset's own calibration, the whole pipeline end to end.
@@ -388,7 +438,27 @@ ones that cost the most to learn are in [Limitations](#limitations) and
 uv venv --python 3.11 && uv pip install -e ".[dev]"
 ```
 
-### The real-data demo (the GIF at the top of this page)
+### The sparse demo (the first GIF on this page) — EPFL Laboratory
+
+~310 MB, direct from EPFL, no registration.
+
+```bash
+uv run python scripts/fetch_epfl.py
+```
+
+```bash
+uv run python scripts/check_epfl_instrument.py
+```
+
+```bash
+uv run mcreid-public-demo epfl
+```
+
+The middle command is not optional decoration: it is the instrument proof, and it
+fails loudly if the transform chain is wrong. Run it before you believe any number
+from the third.
+
+### The crowd demo (the second GIF)
 
 Two commands from a clean clone. The first downloads WILDTRACK (~7 GB,
 SHA-256 pinned, direct from EPFL — no registration); the second runs the whole

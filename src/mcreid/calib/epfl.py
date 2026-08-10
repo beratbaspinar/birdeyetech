@@ -61,6 +61,12 @@ HEAD_PLANE_M = 1.75
 # than assumed; these are the fallback when no header is supplied.
 DEFAULT_GRID = (56, 56)
 
+# The top view the homographies map INTO, in its own pixels. Documented by the
+# dataset page; confirmed by the ground-truth projection check, which fails
+# loudly at any other value.
+TOP_VIEW_PX_W = 358
+TOP_VIEW_PX_H = 360
+
 
 @dataclass(frozen=True)
 class EpflCameraCalibration:
@@ -245,9 +251,19 @@ def build_rig(
     """
     width, height = image_size
     grid_w, grid_h = grid
-    similarity = np.array(
-        [[cell_size_m, 0.0, 0.0], [0.0, cell_size_m, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64
-    )
+    # DIRECTION, and it is the defect that cost this arm a whole build: EPFL's
+    # `H_ground` maps the CAMERA IMAGE to the TOP VIEW, not the other way round.
+    # It is not inverted here. Verified against ground truth rather than assumed —
+    # detected foot points pushed through it land a median 2.05 cells from the
+    # nearest annotated person, where distinct people sit ~10.6 cells apart;
+    # inverting it instead put them 88+ px from anybody at every scale tried.
+    #
+    # The top view is a TOP_VIEW_PX_W x TOP_VIEW_PX_H image of a grid_w x grid_h
+    # grid, so the similarity converts top-view pixels to cells and then to world
+    # units. Anisotropic on purpose: 358/56 and 360/56 are not the same number.
+    sx = grid_w / TOP_VIEW_PX_W * cell_size_m
+    sy = grid_h / TOP_VIEW_PX_H * cell_size_m
+    similarity = np.array([[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
 
     # NOMINAL intrinsics, and they are genuinely unused on the path this rig is
     # for. EPFL ships zero distortion, so `undistort_points` short-circuits and
@@ -260,7 +276,7 @@ def build_rig(
 
     cameras = []
     for calib in calibrations:
-        H_img2world = similarity @ np.linalg.inv(np.asarray(calib.H_ground, dtype=np.float64))
+        H_img2world = similarity @ np.asarray(calib.H_ground, dtype=np.float64)
         H_img2world = H_img2world / H_img2world[2, 2]
         cameras.append(
             CameraCalib(

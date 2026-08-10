@@ -50,6 +50,7 @@ from mcreid.calib.epfl import (
 )
 from mcreid.eval.id_metrics import evaluate_id_consistency
 from mcreid.eval.wildtrack import load_annotations, load_rig
+from mcreid.fusion.associate import AssociationConfig
 from mcreid.fusion.global_id import FusionConfig, GlobalIDManager
 from mcreid.live_multi import appearance_only_fusion_config
 from mcreid.track.gpu_view import GpuPerViewBackend, GpuViewConfig
@@ -425,11 +426,35 @@ EPFL_IMAGE_SIZE = (360, 288)
 EPFL_GT_STRIDE = 25  # the ground truth is annotated once a second at 25 fps
 
 
+# EVERY metric constant in the fusion path, re-derived — not just the two obvious
+# radii. Missing one is not a small error: with `ground_model_sigma` left at its
+# metre value the Mahalanobis gate is ~13x too tight in cell units, rejects every
+# association, and the calibrated arm reports ZERO identities while the
+# appearance-only arm (which opens the geometric radii) still works. That is
+# exactly the failure this cost a run to find, and it is why the list is explicit.
+EPFL_ASSOCIATION_MAX_CELLS = 7.5
+"""Association gate. Kept at 2.5x the birth radius, its original relationship."""
+EPFL_REVIVE_SPEED_MARGIN_CELLS = 4.5
+"""Revival speed margin. Kept at 1.5x the birth radius."""
+EPFL_GROUND_MODEL_SIGMA_CELLS = 2.0
+"""World-space error floor. NOT a ratio — this one is MEASURED. It exists because
+a box's bottom edge is not the ground-contact point, and `check_epfl_instrument.py`
+measures precisely that quantity on this rig: median 2.02 cells from a detected
+foot to the nearest annotated person."""
+EPFL_MAX_POSITION_SIGMA_CELLS = 4.5
+"""Cap on positional sigma. 1.5x the birth radius, and it must stay above the
+sigma floor above or the cap would clamp the floor."""
+
+
 def epfl_fusion_config() -> FusionConfig:
     """`FusionConfig` in grid cells. Deviation-log row 3."""
     return FusionConfig(
         birth_cluster_radius_m=EPFL_BIRTH_CLUSTER_CELLS,
         merge_radius_m=EPFL_MERGE_CELLS,
+        revive_speed_margin_m=EPFL_REVIVE_SPEED_MARGIN_CELLS,
+        ground_model_sigma_m=EPFL_GROUND_MODEL_SIGMA_CELLS,
+        max_position_sigma_m=EPFL_MAX_POSITION_SIGMA_CELLS,
+        association=AssociationConfig(max_distance_m=EPFL_ASSOCIATION_MAX_CELLS),
     )
 
 
@@ -604,6 +629,10 @@ def epfl(
         "radii_cells": {
             "birth_cluster": EPFL_BIRTH_CLUSTER_CELLS,
             "merge": EPFL_MERGE_CELLS,
+            "association_max": EPFL_ASSOCIATION_MAX_CELLS,
+            "revive_speed_margin": EPFL_REVIVE_SPEED_MARGIN_CELLS,
+            "ground_model_sigma": EPFL_GROUND_MODEL_SIGMA_CELLS,
+            "max_position_sigma": EPFL_MAX_POSITION_SIGMA_CELLS,
             "derived_from": "distinct-person nearest-neighbour p05 = 6.1 cells (EPFL GT)",
         },
         "detector": {"weights": str(weights), "imgsz": imgsz, "conf": conf},

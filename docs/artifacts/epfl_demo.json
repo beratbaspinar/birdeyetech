@@ -1,0 +1,70 @@
+{
+  "what_this_is": "the SPARSE demo: EPFL CVLab Laboratory, 4 cameras, the dataset's own calibration, the regime context.md scopes 102 to. Gate evidence for G_S (fallback taken), G_D1e and G_D2e.",
+  "units": "GRID CELLS, not metres",
+  "why_not_metres": "The metric scale is not recoverable from this dataset: no intrinsics are shipped, only 2 of 4 cameras carry the head-plane homography that is the metric ruler, and the ground homography's two Zhang constraints are mutually inconsistent under a centred principal point (fx=fy leaves the spare constraint at 0.30 against 1.0; fx!=fy has no positive solution on any camera). See plan-public-demo.md section 10 and deviation-log row 3. NO DISTANCE HERE IS COMPARABLE TO ANY METRE-DENOMINATED NUMBER IN THIS REPO.",
+  "scale_derivation": "ATTEMPTED AND DEAD-ENDED - fallback to grid units taken",
+  "sequence": "6p",
+  "annotated_frames": 60,
+  "seconds_between_frames": 1.0,
+  "cameras": 4,
+  "grid": {
+    "w": 56,
+    "h": 56
+  },
+  "occupancy": {
+    "mean": 2.6166666666666667,
+    "min": 1,
+    "max": 5
+  },
+  "gt_identities_in_segment": 5,
+  "radii_cells": {
+    "birth_cluster": 3.0,
+    "merge": 2.25,
+    "association_max": 7.5,
+    "revive_speed_margin": 4.5,
+    "ground_model_sigma": 2.0,
+    "max_position_sigma": 4.5,
+    "derived_from": "distinct-person nearest-neighbour p05 = 6.1 cells (EPFL GT)"
+  },
+  "detector": {
+    "weights": "weights\\yolo11x.pt",
+    "imgsz": 640,
+    "conf": 0.25
+  },
+  "embedder": "osnet_x1_0_msmt17",
+  "seed": 42,
+  "per_view_n_init": 1,
+  "per_view_n_init_why": "GT is annotated once a second; consecutive boxes do not overlap, so the IoU-continuity tracker never confirms at the default n_init=5. Same reasoning and same value as cli/eval_wildtrack.py. D-002 consequence accepted: the dormant-adoption window is empty at n_init=1.",
+  "artifacts": {
+    "bev_mp4": {
+      "path": "docs\\assets\\epfl_demo_bev.mp4",
+      "sha256": "84af2b6e92d25272039869b2e65146937f76adf569cb953dbe176427bcf38dc3",
+      "bytes": 1088488
+    },
+    "bev_gif": {
+      "path": "docs\\assets\\epfl_demo_bev.gif",
+      "sha256": "2748e9577c656238c644489a345ccd56279364e0927addca98b2b68ade9c9fab",
+      "bytes": 1521414
+    },
+    "contains_dataset_pixels": false,
+    "note": "BEV canvas only - procedural. Same licence rule as the WILDTRACK arm."
+  },
+  "arms": {
+    "calibrated": {
+      "ids_issued": 35,
+      "ids_shown": 9,
+      "mean_live_ids_per_frame": 3.2,
+      "id_switches": 27,
+      "mean_position_error_cells": 1.7189560603218779,
+      "false_positive_tracks": 0
+    },
+    "uncalibrated": {
+      "ids_issued": 89,
+      "ids_shown": 1,
+      "mean_live_ids_per_frame": 0.9166666666666666,
+      "id_switches": 0,
+      "mean_position_error_cells": 1.6792721787157958,
+      "false_positive_tracks": 0
+    }
+  }
+}

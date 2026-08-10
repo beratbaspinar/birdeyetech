@@ -62,6 +62,9 @@ htmlcov/
 # frames and stay in gitignored reports/. The .mp4 beside it stays out: it is
 # rebuildable with one command and git is not a video host.
 !docs/assets/public_demo_bev.gif
+# Fourth vetted asset, its own deliberate line. Same rule, same reasoning: BEV
+# canvas only, procedural, no EPFL pixels. Its .mp4 stays out.
+!docs/assets/epfl_demo_bev.gif
 
 # --- calibration produced from my room (personal) ---
 /calib/

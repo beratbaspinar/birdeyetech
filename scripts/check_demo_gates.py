@@ -22,6 +22,8 @@ from typing import Any
 REPO = Path(__file__).resolve().parent.parent
 DEMO_JSON = REPO / "docs" / "artifacts" / "public_demo_wildtrack.json"
 ARMS_JSON = REPO / "docs" / "artifacts" / "public_demo_arms.json"
+EPFL_JSON = REPO / "docs" / "artifacts" / "epfl_demo.json"
+EPFL_INSTRUMENT = REPO / "docs" / "artifacts" / "epfl_instrument.json"
 README = REPO / "README.md"
 QUICKSTART = "uv run mcreid-public-demo wildtrack"
 
@@ -163,7 +165,83 @@ def gate_d3() -> GateResult:
     return r
 
 
-GATES = {"g_d1": gate_d1, "g_d2": gate_d2, "g_d3": gate_d3}
+def gate_d1e() -> GateResult:
+    """The EPFL arm ran end to end and produced a BEV artifact — under a passing
+    instrument proof, which is what makes the run mean anything."""
+    r = GateResult("G_D1e  EPFL demo runs end to end, BEV artifact, instrument proved first")
+    demo, instrument = _load(EPFL_JSON), _load(EPFL_INSTRUMENT)
+    if demo is None or instrument is None:
+        r.skip("EPFL artifacts not written yet")
+        return r
+    r.check(bool(instrument["pass"]), "G0e instrument proof passes (coverage + agreement)")
+    r.check(demo["annotated_frames"] > 0, f"ran {demo['annotated_frames']} annotated frames")
+    r.check(demo["cameras"] >= 2, f"{demo['cameras']} cameras")
+    r.check(
+        demo["arms"]["calibrated"]["ids_shown"] > 0,
+        f"the calibrated arm actually tracked somebody "
+        f"({demo['arms']['calibrated']['ids_shown']} identities, "
+        f"{demo['arms']['calibrated']['mean_live_ids_per_frame']:.1f}/frame) — "
+        "nothing ships that shows an empty floor",
+    )
+    for key in ("bev_mp4", "bev_gif"):
+        r.check((REPO / demo["artifacts"][key]["path"]).is_file(), f"{key} on disk")
+    r.check(demo["artifacts"]["contains_dataset_pixels"] is False, "no dataset pixels in the hero")
+    r.note(f"units: {demo['units']} — {demo['scale_derivation']}")
+    return r
+
+
+def gate_d2e() -> GateResult:
+    """G_D2's two conditions, VERBATIM, on the EPFL segment.
+
+    Copied rather than re-tuned for a dataset where they might pass more easily —
+    that was the point of them.
+    """
+    r = GateResult("G_D2e  calibrated beats appearance-only on the EPFL segment")
+    demo = _load(EPFL_JSON)
+    if demo is None:
+        r.skip("EPFL artifact not written yet")
+        return r
+
+    truth = int(demo["gt_identities_in_segment"])
+    cal, unc = demo["arms"]["calibrated"], demo["arms"]["uncalibrated"]
+    r.note(f"ground truth: {truth} identities, occupancy {demo['occupancy']}")
+
+    cal_err, unc_err = abs(cal["ids_shown"] - truth), abs(unc["ids_shown"] - truth)
+    r.check(
+        cal_err < unc_err,
+        f"identity count closer to truth: calibrated {cal['ids_shown']} (off by {cal_err}) "
+        f"vs uncalibrated {unc['ids_shown']} (off by {unc_err})",
+    )
+    r.check(
+        cal["id_switches"] <= unc["id_switches"],
+        f"no worse on switches: calibrated {cal['id_switches']} vs "
+        f"uncalibrated {unc['id_switches']}",
+    )
+    if unc["ids_shown"] <= 1:
+        r.note(
+            "THE SWITCH CONDITION IS UNPASSABLE HERE AND THAT IS A DEFECT IN THE GATE, not a "
+            f"result about the design: the uncalibrated arm collapsed to {unc['ids_shown']} "
+            "identity, so it has 0 switches BY CONSTRUCTION, and any arm that actually tracks "
+            "people loses to that. D-008 says the collapse is what appearance-only fusion always "
+            "does in a multi-person scene, so no working design can pass this clause. See "
+            "reports/blockers.md."
+        )
+    r.note(
+        f"unit-free, and not part of the gate: live identities per frame "
+        f"{cal['mean_live_ids_per_frame']:.1f} (calibrated) vs "
+        f"{unc['mean_live_ids_per_frame']:.1f} (uncalibrated) against a mean occupancy of "
+        f"{demo['occupancy']['mean']:.1f}"
+    )
+    return r
+
+
+GATES = {
+    "g_d1": gate_d1,
+    "g_d2": gate_d2,
+    "g_d3": gate_d3,
+    "g_d1e": gate_d1e,
+    "g_d2e": gate_d2e,
+}
 
 
 def main() -> int:
