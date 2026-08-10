@@ -191,10 +191,20 @@ def gate_d1e() -> GateResult:
 
 
 def gate_d2e() -> GateResult:
-    """G_D2's two conditions, VERBATIM, on the EPFL segment.
+    """Calibrated vs appearance-only on the EPFL segment.
 
-    Copied rather than re-tuned for a dataset where they might pass more easily —
-    that was the point of them.
+    **Clause 2 was amended by operator ruling 2026-08-10** (deviation-log row 4).
+    Its original form — "no worse on switches" — was un-passable by any working
+    design: appearance-only fusion collapses a multi-person scene to one identity
+    (D-008), and one identity has zero switches by construction, so a collapse
+    always won. The degeneracy was written into this file's own warning text in
+    `2cee680` before any EPFL number existed, and the operator ruled it defective.
+
+    It is now **live identities per frame against mean occupancy, closer wins** —
+    which measures what switches were meant to measure and which a collapse
+    cannot win, because collapsing moves the arm *away* from the true occupancy.
+
+    **Clause 1 is unchanged and was not part of the ruling.**
     """
     r = GateResult("G_D2e  calibrated beats appearance-only on the EPFL segment")
     demo = _load(EPFL_JSON)
@@ -203,35 +213,36 @@ def gate_d2e() -> GateResult:
         return r
 
     truth = int(demo["gt_identities_in_segment"])
+    occupancy = float(demo["occupancy"]["mean"])
     cal, unc = demo["arms"]["calibrated"], demo["arms"]["uncalibrated"]
-    r.note(f"ground truth: {truth} identities, occupancy {demo['occupancy']}")
+    r.note(f"ground truth: {truth} identities, mean occupancy {occupancy:.1f}")
 
     cal_err, unc_err = abs(cal["ids_shown"] - truth), abs(unc["ids_shown"] - truth)
     r.check(
         cal_err < unc_err,
-        f"identity count closer to truth: calibrated {cal['ids_shown']} (off by {cal_err}) "
-        f"vs uncalibrated {unc['ids_shown']} (off by {unc_err})",
+        f"[clause 1, unchanged] distinct identities over the run closer to truth: "
+        f"calibrated {cal['ids_shown']} (off by {cal_err}) vs "
+        f"uncalibrated {unc['ids_shown']} (off by {unc_err})",
     )
+
+    cal_occ = abs(float(cal["mean_live_ids_per_frame"]) - occupancy)
+    unc_occ = abs(float(unc["mean_live_ids_per_frame"]) - occupancy)
     r.check(
-        cal["id_switches"] <= unc["id_switches"],
-        f"no worse on switches: calibrated {cal['id_switches']} vs "
-        f"uncalibrated {unc['id_switches']}",
+        cal_occ < unc_occ,
+        f"[clause 2, AMENDED by operator 2026-08-10] live identities per frame closer to "
+        f"occupancy: calibrated {cal['mean_live_ids_per_frame']:.1f} (off by {cal_occ:.1f}) "
+        f"vs uncalibrated {unc['mean_live_ids_per_frame']:.1f} (off by {unc_occ:.1f})",
     )
-    if unc["ids_shown"] <= 1:
+
+    if cal_err == unc_err:
         r.note(
-            "THE SWITCH CONDITION IS UNPASSABLE HERE AND THAT IS A DEFECT IN THE GATE, not a "
-            f"result about the design: the uncalibrated arm collapsed to {unc['ids_shown']} "
-            "identity, so it has 0 switches BY CONSTRUCTION, and any arm that actually tracks "
-            "people loses to that. D-008 says the collapse is what appearance-only fusion always "
-            "does in a multi-person scene, so no working design can pass this clause. See "
-            "reports/blockers.md."
+            "CLAUSE 1 IS A TIE, and a tie fails a strict '<'. Worth the operator's eye but NOT "
+            "amended here: the ruling covered clause 2 only, and widening it unasked would be "
+            "moving a gate to make it pass. Note that `ids_shown` counts distinct identities "
+            "across the whole run, so it mixes in people entering and leaving over 60 s — a "
+            "collapsing arm scores 1 and is 'off by 4' for a reason that has nothing to do with "
+            "tracking well."
         )
-    r.note(
-        f"unit-free, and not part of the gate: live identities per frame "
-        f"{cal['mean_live_ids_per_frame']:.1f} (calibrated) vs "
-        f"{unc['mean_live_ids_per_frame']:.1f} (uncalibrated) against a mean occupancy of "
-        f"{demo['occupancy']['mean']:.1f}"
-    )
     return r
 
 

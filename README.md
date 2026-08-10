@@ -56,10 +56,14 @@ none. Without it, appearance-only fusion **collapses the whole room into a singl
 mechanism D-008 measured, where averaging appearance drags every identity toward the population
 centroid. But the calibrated arm also churns: **27 ID switches over
 60 frames** for 5 people, because this ground
-truth is annotated once a second and a person crosses several cells between frames. **The formal
-gate (G_D2e) FAILS**, and the report says why the failure is partly the gate's own fault: an arm
-that collapses to one identity has zero switches by construction, so no working design can win
-that clause. `reports/demo_build_2026-08-10.md`.
+truth is annotated once a second and a person crosses several cells between frames. **The formal gate
+(G_D2e) still FAILS**, and the README says so rather than burying it. Its switch clause was ruled
+defective by the operator and replaced — an arm that collapses to one identity has zero switches by
+construction, so no working design could ever win it — and under the replacement the calibrated arm
+**passes**: 3.2 live identities against a true 2.6, versus appearance-only's 0.9. What still fails
+is the other clause, on a **tie**: both arms are off by 4 on the count of distinct identities across
+the whole run. Full reasoning, including why the amendment is not the gate being fitted to the
+answer: `reports/demo_build_2026-08-10.md`.
 
 ### The crowd case — measured failure analysis, not a claim
 
