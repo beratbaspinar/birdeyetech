@@ -43,12 +43,18 @@ class BevRenderer:
         trail_length: int = 45,
         grid_step_m: float = 1.0,
         max_labelled_tracks: int = 12,
+        units: str = "metres",
     ) -> None:
         self.rig = rig
         self.canvas_size = canvas_size
         self.trail_length = trail_length
         self.grid_step_m = grid_step_m
         self.max_labelled_tracks = max_labelled_tracks
+        self.units = units
+        """What one world unit IS. Not cosmetic: the EPFL arm is GRID-METRIC —
+        its scale is unidentifiable from the dataset (deviation-log row 3) — and a
+        canvas hard-coded to print "metres" puts a false unit on the artifact that
+        is the README's front page, next to prose that correctly calls it cells."""
         """Above this many live tracks the map is too dense to label everything;
         labelling is reduced to the tracks that carry information."""
 
@@ -279,7 +285,7 @@ class BevRenderer:
                 cv2.LINE_AA,
             )
 
-        header = "BEV  (metres)"
+        header = f"BEV  ({self.units})"
         if frame is not None:
             header += f"   frame {frame}"
         cv2.putText(
@@ -287,7 +293,7 @@ class BevRenderer:
         )
         cv2.putText(
             canvas,
-            f"{self.grid_step_m:g} m grid",
+            f"{self.grid_step_m:g} {self.units} grid",
             (10, self.canvas_size[1] - 12),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.42,
