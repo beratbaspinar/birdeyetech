@@ -214,3 +214,107 @@ produced a plausible-looking rig and an empty demo instead of an error. Blockers
 - **Kill counter: 1 of 2, unchanged.** Arm 2 has still not been *rejected* — it has not produced a
   measurement to reject.
 - The demo that ships is still the WILDTRACK one, with the README exactly as it was.
+
+---
+
+# Addendum 2 — arm 2 completed (2026-08-10, operator order: build the instrument check first)
+
+**The sparse demo works and ships.** EPFL Laboratory, 4 cameras, 1–5 people in a room, the
+dataset's own calibration, grid-metric. It is the first time this project has demonstrated its
+own stated regime on real footage.
+
+| gate | result |
+|---|---|
+| **G0e** instrument proof (built first, as ordered) | **PASS** — coverage 96.4 %, agreement 2.02 cells against a 3.0 bound |
+| **G_D1e** demo runs end to end, BEV artifact | **PASS** — 8/8 |
+| **G_D2e** calibrated beats appearance-only | **FAIL** — and one clause of it is unpassable by any working design. Recorded **VOID**, blockers row filed |
+| **G_D3** README | **PASS** — 6/6 |
+
+**Kill counter unchanged at 1 of 2.** The criterion does not fire.
+
+## The instrument check found the bug rather than merely guarding against it
+
+Built first, per the order. Two conditions:
+
+- **A. Coverage** — every annotated position must project inside the 360×288 image for ≥ 2 of the
+  four cameras. **96.4 % of 476 positions, mean 3.31 cameras.**
+- **B. Agreement** — a detected foot point pushed through the chain must land near an annotated
+  person, bounded by **3.0 cells, which *is* the birth-clustering radius**. A projection error
+  above the radius that decides "same person" makes every downstream identity claim arbitrary, so
+  the bound is derived rather than read off the result. **Measured 2.02 cells.**
+
+Scored against B, the defect was unmistakable and, importantly, *not what I had assumed*. Every
+candidate row/column ordering and axis flip scored equally badly — 70–105 px in a 360×288 image —
+and sweeping px-per-cell from 1 to 20 never got below 88 px. **A flat curve with no minimum is the
+signature of "uncorrelated with where people are", not of "mis-scaled".**
+
+So the error was structural: **EPFL's `H_ground` maps the camera image to the top view**, and I had
+been inverting it. Applied in the correct direction at the documented 358/56 px per cell, detected
+feet land **2.02 cells** from the nearest annotated person, against distinct people sitting ~10.6
+cells apart.
+
+## And then the second half, which the first fix exposed
+
+With the geometry correct the calibrated arm *still* reported zero identities while the
+appearance-only arm worked. Cause: **I re-derived the two obvious radii and left four other metric
+constants at their metre values.** `ground_model_sigma` at 0.15 makes the Mahalanobis gate roughly
+13× too tight in cell units and rejects every association — silently, because a gate that rejects
+everything looks like a scene with nobody in it.
+
+All four are now re-derived explicitly, and the one that matters most is **measured, not scaled**:
+the world-space error floor exists because a box bottom is not a ground-contact point, and G0e
+measures precisely that quantity at 2.02 cells.
+
+This is deviation-log row 3's own warning coming true in the concrete — "a wrong scale silently
+rescales the entire fusion stage" — and the lesson is narrower than "convert your units": **the
+constants that break you are the ones you did not notice were constants.**
+
+## The result
+
+On 5 ground-truth identities, occupancy 1–5 (mean 2.6), 60 frames one second apart:
+
+| | calibrated | appearance-only |
+|---|---|---|
+| **live identities/frame** (truth ≈ 2.6) | **3.2** | 0.9 |
+| distinct identities over the run | 9 | 1 |
+| ID switches | **27** | 0 |
+| mean position error | 1.72 cells | 1.68 cells |
+| false-positive tracks | **0** | 0 |
+
+**With geometry the system holds 3.2 identities against 2.6 real people and invents none. Without
+it, the room collapses into a single identity** — D-008's mechanism, unchanged.
+
+**And it churns.** 27 switches over 60 frames for 5 people is a lot, and the reason is structural:
+this ground truth is annotated once a second, a person crosses several cells between frames, and
+`n_init` had to drop to 1 for anything to confirm at all. This demo shows cross-camera *fusion*
+working in the sparse regime; it does not show long-run identity *persistence*, and the README
+does not claim it does.
+
+## G_D2e fails, and one clause of it is my mistake rather than the design's
+
+Both clauses fail. Clause 1 (identity count closer to truth) is a **tie** — 9 vs 5 and 1 vs 5, both
+off by 4. Clause 2 (no worse on switches) fails 27 to 0.
+
+**Clause 2 cannot be passed by any working design.** D-008 guarantees appearance-only fusion
+collapses a multi-person scene into one identity, and one identity has zero switches *by
+construction*. Any arm that actually tracks people loses automatically.
+
+That is a defect in the gate I wrote, not a result about the arm — and the reason it can be called
+that honestly is that **the degeneracy was written into the checker's own warning text in commit
+`2cee680`, before this run produced any number.** It was foreseen and then not acted on, which is
+the mistake; discovering it now and calling it a design failure would be the worse one.
+
+Recorded **VOID**, counter unchanged at **1 of 2**, with a blockers row asking the operator to rule
+on the rejection and to replace the clause. The recommended replacement is already measured and
+printed beside it: **live identities per frame against mean occupancy** — 3.2 vs 2.6 versus 0.9 vs
+2.6 — which measures what switches were meant to and cannot be won by collapsing.
+
+## What ships
+
+- **The sparse hero is the EPFL BEV**, first thing on the README, labelled grid-metric and
+  captioned with the failing switch count.
+- **WILDTRACK stays exactly where it was**: the crowd demo, framed as measured failure analysis.
+- **Licence guard unchanged**: BEV canvas only, procedural, whitelisted by exact filename, `.mp4`
+  and every frame of either dataset stay out.
+- **The quickstart is three commands** and the middle one is the instrument proof, with a sentence
+  telling a stranger not to believe the third without it.
