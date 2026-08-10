@@ -318,3 +318,62 @@ printed beside it: **live identities per frame against mean occupancy** — 3.2 
   and every frame of either dataset stay out.
 - **The quickstart is three commands** and the middle one is the instrument proof, with a sentence
   telling a stranger not to believe the third without it.
+
+---
+
+# Addendum 3 — G_D2e re-evaluated under the operator's amendment (2026-08-10, session close)
+
+**Operator ruling: clause 2 is defective as foreseen; replace it with live identities per frame
+against mean occupancy.** Done, `reports/deviation-log.md` row 4, authority **operator**.
+
+## The verdict did not change
+
+| clause | | result |
+|---|---|---|
+| 1 — distinct identities over the run, closer to truth | *unchanged, not part of the ruling* | **FAIL — a tie.** calibrated 9 vs truth 5, uncalibrated 1 vs truth 5, both off by 4 |
+| 2 — live identities per frame, closer to mean occupancy | **AMENDED** | **PASS.** calibrated 3.2 (off by 0.6) vs uncalibrated 0.9 (off by 1.7) |
+
+**G_D2e still FAILS.** No README table changed, because no number changed; the caption was
+corrected, because it named a clause that no longer exists.
+
+**That the amendment did not rescue the gate is the point.** A clause rewritten by the party whose
+result it judges, which then produces a pass, should be read as a gate fitted to its answer. This
+one was proposed with its defect named, signed by the operator, and still fails — which is what
+makes it a correction.
+
+**Clause 1 was left alone deliberately.** The ruling covered clause 2. Widening an operator's
+amendment unasked, after seeing which clause blocks the pass, is precisely how a threshold gets
+moved to fit a result.
+
+## The kill counter is an open operator question, not mine to take
+
+Strictly, `plan-public-demo.md` §7 rejects an arm that fails G_D2e — which would put the counter at
+**2 of 2 and fire the criterion**, killing a task whose demo works, ships, and is on the front page
+of the README.
+
+Against that: the failure is a **tie, not a loss**, and `ids_shown` counts distinct identities
+across 60 seconds, so it folds in every person who entered or left. A collapsing arm scores 1 and is
+"off by 4" for reasons that have nothing to do with tracking well.
+
+I have **not** fired it and I have **not** voided it. It is a `blockers.md` row with three options
+and a recommendation. Deciding it myself in either direction would be the wrong move: firing a
+criterion on a tie is as much a distortion as softening one on a result I like.
+
+**Counter stands at 1 of 2, pending that ruling.**
+
+## Where 102 exits this session
+
+| | |
+|---|---|
+| **Sparse demo** — EPFL Laboratory, 4 cameras, 1–5 people in a room | **ships.** G0e PASS, G_D1e PASS 8/8, hero on the README, grid-metric and labelled |
+| **Crowd demo** — WILDTRACK, sparsest segment | **ships**, framed as measured failure analysis, unchanged |
+| **Foot-point estimator** | both arms rejected, both VOID, counter 0 of 2 — the box bottom is at the noise floor its own optics allow, and a per-view rule cannot beat it |
+| **EPFL metric scale** | **unidentifiable** from the data; grid-metric everywhere and said so |
+| **Live capture** | cancelled permanently; `calib/` empty and will stay so |
+| **Repo** | public by operator decision, everything pushed |
+| **Gates open** | G_D2 (crowd, honest failure), G_D2e (sparse, one tied clause) |
+| **Tests** | 560 green, ruff + mypy clean |
+
+The honest one-line summary of the project's state: **the geometry works in the regime the project
+claims, on real public footage, and it is the identity bookkeeping over long runs — not the
+geometry — that is still weak.** 27 switches over 60 frames says so, and the README says it too.
