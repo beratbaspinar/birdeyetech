@@ -86,6 +86,7 @@ htmlcov/
 !/reports/blockers.md
 !/reports/method_compliance_2026-08-09.md
 !/reports/footpoint_build_2026-08-10.md
+!/reports/demo_build_2026-08-10.md
 *.log
 
 # --- internal working logs (local only, deliberately untracked) ---
