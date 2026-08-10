@@ -79,3 +79,45 @@ def resolve_device(requested: str = "auto", allow_half: bool = True) -> DeviceSp
     )
     logger.info("resolved device: %s", spec)
     return spec
+
+
+def probe_compute_device(
+    requested: str, task: str, allow_cpu: bool = False, allow_half: bool = True
+) -> DeviceSpec:
+    """Resolve, log, and — unless ``allow_cpu`` — refuse to start on CPU.
+
+    `refactored_method.md` §5, environment probe before compute: before any run
+    estimated at more than ~5 minutes, assert CUDA is actually there and log the
+    device. **A CPU fallback on GPU-intended work is a STOP, not a slow run.**
+    Grinding hours on CPU for a job the GPU does in minutes is the canonical
+    violation, and it is invisible without this check because the run looks
+    healthy — it is just 20x slower and nothing says so.
+
+    ``resolve_device("auto")`` deliberately degrades to CPU so the torch-free
+    core stays importable. That is right for a library and wrong for a long
+    command, which is why the refusal lives here and not there.
+
+    Args:
+        requested: device string, as `resolve_device`.
+        task: what is about to run, named in the error so the blockers row
+            writes itself.
+        allow_cpu: escape hatch for deliberately running the slow path.
+
+    Raises:
+        RuntimeError: CPU resolved and ``allow_cpu`` is False.
+    """
+    spec = resolve_device(requested, allow_half=allow_half)
+    if spec.kind != "cuda" and not allow_cpu:
+        # ASCII on purpose. This string is read on a Windows console that mangles
+        # the em-dashes and section signs used everywhere else in this repo, and a
+        # STOP message full of replacement characters reads like a second bug.
+        raise RuntimeError(
+            f"{task}: environment probe FAILED - resolved to {spec.torch_device}, not cuda.\n"
+            "This is a STOP (refactored_method.md section 5), not a slow run: on CPU this job "
+            "is ~20x longer and every number it produces arrives too late to be worth having.\n"
+            "Diagnose first - driver, the perception extra, CUDA_VISIBLE_DEVICES - then either "
+            "fix it or file a reports/blockers.md row. Pass --allow-cpu only if the slow path "
+            "is genuinely what you want."
+        )
+    logger.info("env probe OK — %s runs on %s", task, spec)
+    return spec

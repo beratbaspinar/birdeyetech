@@ -43,6 +43,7 @@ from mcreid.fusion.global_id import FusionConfig, GlobalIDManager
 from mcreid.fusion.types import TrackState, ViewObservation
 from mcreid.track.gpu_view import GpuPerViewBackend, GpuViewConfig
 from mcreid.track.reid_models import DEFAULT_EMBEDDER
+from mcreid.utils.device import probe_compute_device
 from mcreid.utils.logging import get_logger, setup_logging
 from mcreid.utils.seed import DEFAULT_SEED, seed_everything
 from mcreid.viz.bev import BevRenderer
@@ -208,6 +209,11 @@ def footpoint(
     iou_threshold: float = typer.Option(
         0.5, help="IoU required to attribute a detector box to an annotated person."
     ),
+    device: str = typer.Option("auto", help="Compute device: auto | cpu | cuda | cuda:N."),
+    allow_cpu: bool = typer.Option(
+        False,
+        help="Run even if the environment probe resolves to CPU. Off by default (§5).",
+    ),
     seed: int = typer.Option(DEFAULT_SEED, help="RNG seed."),
     log_level: str = typer.Option("INFO"),
 ) -> None:
@@ -224,6 +230,11 @@ def footpoint(
     """
     setup_logging(log_level)
     seed_everything(seed)
+    # §5: probe before compute, not after. Seven cameras x n_frames through a
+    # 1280 px detector is minutes at best and the whole point of the command is
+    # the detector arm — resolving to CPU here means the run is worthless, so it
+    # fails now rather than at the end.
+    probe_compute_device(device, "mcreid-wildtrack footpoint", allow_cpu=allow_cpu)
     if not root.is_dir():
         raise typer.BadParameter(
             f"{root} not found. Run: python scripts/download_wildtrack.py fetch"
@@ -240,7 +251,8 @@ def footpoint(
 
     backends = {
         cam.camera_id: GpuPerViewBackend(
-            cam.camera_id, GpuViewConfig(weights=weights, imgsz=imgsz, conf_threshold=conf)
+            cam.camera_id,
+            GpuViewConfig(weights=weights, imgsz=imgsz, conf_threshold=conf, device=device),
         )
         for cam in rig.cameras
     }
@@ -376,12 +388,22 @@ def run(
         ),
     ),
     export_video: bool = typer.Option(True, help="Write annotated mosaic video + GIF."),
+    device: str = typer.Option("auto", help="Compute device: auto | cpu | cuda | cuda:N."),
+    allow_cpu: bool = typer.Option(
+        False,
+        help="Run even if the environment probe resolves to CPU. Off by default (§5).",
+    ),
     seed: int = typer.Option(DEFAULT_SEED),
     log_level: str = typer.Option("INFO"),
 ) -> None:
     """Run detection + tracking + fusion over a WILDTRACK clip and score it."""
     setup_logging(log_level)
     seed_everything(seed)
+    # §5: probe before compute. Detection *and* an appearance embedder over
+    # n_frames x 7 cameras; the timings this command reports are meaningless if
+    # they were taken on the wrong device, which is the one failure mode that
+    # does not announce itself.
+    probe_compute_device(device, "mcreid-wildtrack run", allow_cpu=allow_cpu)
     if not root.is_dir():
         raise typer.BadParameter(
             f"{root} not found. Run: python scripts/download_wildtrack.py fetch"
@@ -401,7 +423,11 @@ def run(
         cam.camera_id: GpuPerViewBackend(
             cam.camera_id,
             GpuViewConfig(
-                weights=weights, imgsz=imgsz, conf_threshold=conf, embedder=embedder
+                weights=weights,
+                imgsz=imgsz,
+                conf_threshold=conf,
+                embedder=embedder,
+                device=device,
             ),
         )
         for cam in rig.cameras
