@@ -24,19 +24,84 @@
   },
   "embedder": "osnet_x1_0_msmt17",
   "seed": 42,
-  "median_ms_per_frame_all_cameras": 1258.4978500090074,
+  "median_ms_per_frame_all_cameras": 577.0260499848519,
   "artifacts": {
     "bev_mp4": {
       "path": "docs\\assets\\public_demo_bev.mp4",
-      "sha256": "fd18575b6c320b7669ea759c58455aabd8bdd4b69e9fe6205fe003d0b7c62d94",
-      "bytes": 1029112
+      "sha256": "78d1dfb4c3d67054983735d67f09a0ab0602ebbc0d53d29f10c2c506b3b67e27",
+      "bytes": 1029505
     },
     "bev_gif": {
       "path": "docs\\assets\\public_demo_bev.gif",
-      "sha256": "3cdddb0c5bc075304ed77f7324f91a46ad052fae99acdcf1a90b3f159f504c67",
-      "bytes": 1193498
+      "sha256": "e7afac58892b684032b4d92c5e1a0fb52023946a3ec3c78c3e54fa8d0b8b9493",
+      "bytes": 1234935
     },
     "contains_dataset_pixels": false,
-    "note": "BEV canvas only \u2014 procedural floor grid, identity dots, camera frusta. Per-camera overlays are NOT exported here: rendering WILDTRACK frames into a shippable asset would be committing the dataset (CLAUDE.md)."
+    "note": "BEV canvas only \u2014 procedural floor grid, identity dots, camera frusta. The composite below DOES render WILDTRACK frames and is therefore generated locally and never committed (CLAUDE.md)."
+  },
+  "composite": {
+    "contains_dataset_pixels": true,
+    "committed": false,
+    "why_not_committed": "every frame is rendered from dataset footage, and CLAUDE.md's rule is that anything rendered from the dataset IS the dataset. Written under gitignored reports/; mcreid.viz.composite.assert_generated_only refuses any path under docs/. Regenerate it with the command in the README.",
+    "render_seconds": 6.065,
+    "median_ms_per_composite_frame": 37.91,
+    "stages": {
+      "raw": {
+        "path": "reports/public_demo/wildtrack_raw.mp4",
+        "sha256": "6849e2a1eddf3984e76d76e989f759582ac5f3eef89a686d5b4dba7e95d88369",
+        "bytes": 3365927,
+        "frames": 40,
+        "stage": "raw",
+        "camera_panels": 7,
+        "labelled_boxes": 0,
+        "assigned_boxes_withheld_because_not_on_the_map": 0,
+        "frames_with_an_id_in_multiple_panels": 0,
+        "max_ids_in_multiple_panels_in_a_frame": 0,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      },
+      "boxes": {
+        "path": "reports/public_demo/wildtrack_boxes.mp4",
+        "sha256": "7b94cb3487c628700b52c74b29f5c5108a9ca7284e9317f7566f4df9062ca438",
+        "bytes": 4555299,
+        "frames": 40,
+        "stage": "boxes",
+        "camera_panels": 7,
+        "labelled_boxes": 0,
+        "assigned_boxes_withheld_because_not_on_the_map": 0,
+        "frames_with_an_id_in_multiple_panels": 0,
+        "max_ids_in_multiple_panels_in_a_frame": 0,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      },
+      "ids": {
+        "path": "reports/public_demo/wildtrack_ids.mp4",
+        "sha256": "619359716a2d9b71fef29066e05bac62fdac7913dd7cd5cd74d112fe471383f1",
+        "bytes": 4892027,
+        "frames": 40,
+        "stage": "ids",
+        "camera_panels": 7,
+        "labelled_boxes": 3830,
+        "assigned_boxes_withheld_because_not_on_the_map": 896,
+        "frames_with_an_id_in_multiple_panels": 36,
+        "max_ids_in_multiple_panels_in_a_frame": 26,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      },
+      "composite": {
+        "path": "reports/public_demo/wildtrack_composite.mp4",
+        "sha256": "644c8e86b9a82fa41bf6a60926a3d35318cd01b0ea6760462665f728df525d07",
+        "bytes": 5722912,
+        "frames": 40,
+        "stage": "composite",
+        "camera_panels": 7,
+        "labelled_boxes": 3830,
+        "assigned_boxes_withheld_because_not_on_the_map": 896,
+        "frames_with_an_id_in_multiple_panels": 36,
+        "max_ids_in_multiple_panels_in_a_frame": 26,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      }
+    }
   }
 }

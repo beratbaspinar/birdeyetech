@@ -9,6 +9,7 @@ cannot be satisfied by the same code that produced the number it reads.
     G_D1  the demo runs and produces a BEV artifact, from the dataset's calibration
     G_D2  calibrated vs uncalibrated identity persistence, on the shipped segment
     G_D3  README: real artifact, honest framing, stranger-runnable quickstart
+    G_D4  the composite (every camera view + the BEV) renders for BOTH arms
 """
 
 from __future__ import annotations
@@ -162,6 +163,13 @@ def gate_d3() -> GateResult:
     )
     synthetic_ok = "cardboard_demo.gif" not in text or "synthetic" in text.lower()
     r.check(synthetic_ok, "synthetic hero is removed, or present and labelled synthetic")
+    # The composite is the legible artifact and it cannot ship, so the command
+    # that regenerates it has to be on the page or the reader is left with a map
+    # and no way to see what produced it.
+    r.check(
+        "mcreid-public-demo epfl --stages all" in text,
+        "the hero section carries the composite command (the artifact cannot be embedded)",
+    )
     return r
 
 
@@ -246,12 +254,113 @@ def gate_d2e() -> GateResult:
     return r
 
 
+# A loose sanity bound on the demo renderer, and deliberately loose: it exists to
+# catch a composite that has become unusable to produce (a full second per frame
+# on a 4-camera 360x288 scene means something is wrong), NOT to make a
+# performance claim. The project's FPS claim is measured on the pipeline, which
+# `_run_arm` times separately from this.
+COMPOSITE_MS_PER_FRAME_SANITY = 1000.0
+
+
+def _gate_composite(r: GateResult, label: str, demo: dict[str, Any], cameras: int) -> None:
+    """One arm's composite, checked against the arm's own run.
+
+    The two substantive checks are the ones a pretty video cannot fake: every
+    camera that fed the run has a panel, and an identity that appears in two
+    panels appears in ONE colour. Both are non-vacuous — `tests/
+    test_viz_composite.py` carries the controls proving each can come out false.
+    """
+    composite = demo.get("composite")
+    if composite is None:
+        r.check(False, f"{label}: no composite in the results JSON (run without --no-composite)")
+        return
+
+    stages = composite.get("stages", {})
+    full = stages.get("composite")
+    if full is None:
+        r.check(False, f"{label}: the 'composite' stage was not rendered (only {sorted(stages)})")
+        return
+
+    frames_expected = int(demo.get("annotated_frames") or demo["segment"]["n_frames"])
+    r.check(
+        int(full["frames"]) == frames_expected,
+        f"{label}: rendered every frame of the run ({full['frames']}/{frames_expected})",
+    )
+    r.check(
+        int(full["camera_panels"]) == cameras,
+        f"{label}: all {cameras} camera views are in the frame "
+        f"({full['camera_panels']} panels) — plus the BEV as the final panel",
+    )
+    r.check(
+        bool(full["id_colour_consistent"]),
+        f"{label}: global IDs are colour-consistent across panels "
+        f"(conflicts: {full['id_colour_conflicts']})",
+    )
+    r.check(
+        int(full["frames_with_an_id_in_multiple_panels"]) > 0,
+        f"{label}: an identity is actually shown in >= 2 camera panels on "
+        f"{full['frames_with_an_id_in_multiple_panels']}/{full['frames']} frames — "
+        "without this the video is N independent trackers side by side",
+    )
+
+    path = Path(full["path"])
+    r.check(len(full["sha256"]) == 64, f"{label}: composite sha256 recorded")
+    r.check(int(full["bytes"]) > 0, f"{label}: composite is {full['bytes'] / 1e6:.1f} MB")
+    r.check(
+        path.is_file() or (REPO / path).is_file(),
+        f"{label}: composite on disk at {path} (generated, so absent in a fresh clone "
+        "until the README's one command is run)",
+    )
+    # The licence position, asserted rather than trusted — and asserted in the
+    # direction opposite to G_D1's. The BEV must declare NO dataset pixels
+    # because it ships; the composite must declare that it HAS them, and that it
+    # is not committed, because that is the reason it does not ship.
+    r.check(
+        composite["contains_dataset_pixels"] is True,
+        f"{label}: composite declares it contains dataset pixels (it renders footage)",
+    )
+    r.check(
+        composite["committed"] is False,
+        f"{label}: composite is declared not committed",
+    )
+    r.check(
+        "docs" not in path.parts,
+        f"{label}: composite lives outside the tracked asset tree ({path.parent})",
+    )
+    ms = float(composite["median_ms_per_composite_frame"])
+    r.check(
+        ms < COMPOSITE_MS_PER_FRAME_SANITY,
+        f"{label}: render cost sane at {ms:.1f} ms/frame "
+        f"(bound {COMPOSITE_MS_PER_FRAME_SANITY:.0f} ms — a sanity check, not an FPS claim)",
+    )
+
+
+def gate_d4() -> GateResult:
+    """The composite renders for BOTH arms.
+
+    A BEV alone is not legible: it asks the viewer to accept that the dots are
+    the people in the footage and that the number over a dot matches the number
+    over that person in each camera. This gate is about whether the artifact that
+    shows those three things actually exists, for the sparse hero and for the
+    crowd stress test alike.
+    """
+    r = GateResult("G_D4   composite (all camera views + BEV) renders for both arms")
+    epfl, wildtrack = _load(EPFL_JSON), _load(DEMO_JSON)
+    if epfl is None or wildtrack is None:
+        r.skip("both arms' artifacts must be present to gate both arms")
+        return r
+    _gate_composite(r, "EPFL (sparse)", epfl, int(epfl["cameras"]))
+    _gate_composite(r, "WILDTRACK (crowd)", wildtrack, int(wildtrack["cameras"]))
+    return r
+
+
 GATES = {
     "g_d1": gate_d1,
     "g_d2": gate_d2,
     "g_d3": gate_d3,
     "g_d1e": gate_d1e,
     "g_d2e": gate_d2e,
+    "g_d4": gate_d4,
 }
 
 

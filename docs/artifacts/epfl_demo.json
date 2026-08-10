@@ -38,16 +38,81 @@
   "artifacts": {
     "bev_mp4": {
       "path": "docs\\assets\\epfl_demo_bev.mp4",
-      "sha256": "84af2b6e92d25272039869b2e65146937f76adf569cb953dbe176427bcf38dc3",
-      "bytes": 1088488
+      "sha256": "4ee77ec22fe4b96904818bbd70415c23e547ce5af5ca45ce0f02be8728c2c799",
+      "bytes": 1090720
     },
     "bev_gif": {
       "path": "docs\\assets\\epfl_demo_bev.gif",
-      "sha256": "2748e9577c656238c644489a345ccd56279364e0927addca98b2b68ade9c9fab",
-      "bytes": 1521414
+      "sha256": "b877e966b58afaa5e365b2065b3e8f9d264dd82a1c55562ba45e82ff6a8caa39",
+      "bytes": 1518357
     },
     "contains_dataset_pixels": false,
     "note": "BEV canvas only - procedural. Same licence rule as the WILDTRACK arm."
+  },
+  "composite": {
+    "contains_dataset_pixels": true,
+    "committed": false,
+    "why_not_committed": "every frame is rendered from dataset footage, and CLAUDE.md's rule is that anything rendered from the dataset IS the dataset. Written under gitignored reports/; mcreid.viz.composite.assert_generated_only refuses any path under docs/. Regenerate it with the command in the README.",
+    "render_seconds": 2.97,
+    "median_ms_per_composite_frame": 12.37,
+    "stages": {
+      "raw": {
+        "path": "reports/epfl_demo/epfl_6p_raw.mp4",
+        "sha256": "ce558792f2826bbe30637a25d3f01b36b699b03d715c04055a2cf2b381f37529",
+        "bytes": 5768128,
+        "frames": 60,
+        "stage": "raw",
+        "camera_panels": 4,
+        "labelled_boxes": 0,
+        "assigned_boxes_withheld_because_not_on_the_map": 0,
+        "frames_with_an_id_in_multiple_panels": 0,
+        "max_ids_in_multiple_panels_in_a_frame": 0,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      },
+      "boxes": {
+        "path": "reports/epfl_demo/epfl_6p_boxes.mp4",
+        "sha256": "9a26552446ef5b1a858a8de0b2b2c4e8a6536268ab6b46d28d8ab8b192508a75",
+        "bytes": 6891351,
+        "frames": 60,
+        "stage": "boxes",
+        "camera_panels": 4,
+        "labelled_boxes": 0,
+        "assigned_boxes_withheld_because_not_on_the_map": 0,
+        "frames_with_an_id_in_multiple_panels": 0,
+        "max_ids_in_multiple_panels_in_a_frame": 0,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      },
+      "ids": {
+        "path": "reports/epfl_demo/epfl_6p_ids.mp4",
+        "sha256": "48904737e40716c2e15e1e0458561af1bb7563837734d006b0848abd9b4d50bb",
+        "bytes": 6677248,
+        "frames": 60,
+        "stage": "ids",
+        "camera_panels": 4,
+        "labelled_boxes": 225,
+        "assigned_boxes_withheld_because_not_on_the_map": 115,
+        "frames_with_an_id_in_multiple_panels": 39,
+        "max_ids_in_multiple_panels_in_a_frame": 3,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      },
+      "composite": {
+        "path": "reports/epfl_demo/epfl_6p_composite.mp4",
+        "sha256": "d2966da0b81104ca9f8465adae298b734a1a6007f4a8b20e301e32b0c604483b",
+        "bytes": 7381453,
+        "frames": 60,
+        "stage": "composite",
+        "camera_panels": 4,
+        "labelled_boxes": 225,
+        "assigned_boxes_withheld_because_not_on_the_map": 115,
+        "frames_with_an_id_in_multiple_panels": 39,
+        "max_ids_in_multiple_panels_in_a_frame": 3,
+        "id_colour_conflicts": [],
+        "id_colour_consistent": true
+      }
+    }
   },
   "arms": {
     "calibrated": {

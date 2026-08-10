@@ -20,6 +20,16 @@ frusta, no dataset pixels anywhere in it. Per-camera overlays are still rendered
 because they are the honest way to look at a run, and they stay in gitignored
 `reports/`. If you are about to whitelist something out of `reports/`, stop.
 
+**The COMPOSITE is the legible artifact and it is generated, never committed.**
+A BEV alone asks the viewer to take on faith that the dots are the people in the
+footage; the composite shows the camera views that produced it beside the map,
+with the same integer in the same colour over the same person in every panel.
+It therefore contains dataset pixels by construction, so it is written under
+gitignored `reports/` and `mcreid.viz.composite.assert_generated_only` refuses
+any destination inside `docs/`. Its hash and a `contains_dataset_pixels: true`
+flag go into the committed results JSON — the metric record ships, the pixels
+never do. Gate G_D4.
+
 ## What it honestly is
 
 WILDTRACK's sparsest window still holds **15.6 people/frame** (floor 13). That is
@@ -60,6 +70,14 @@ from mcreid.utils.device import probe_compute_device
 from mcreid.utils.logging import get_logger, setup_logging
 from mcreid.utils.seed import DEFAULT_SEED, seed_everything
 from mcreid.viz.bev import BevRenderer
+from mcreid.viz.composite import (
+    ALL_STAGES,
+    CompositeRecord,
+    CompositeRenderer,
+    OverlayStage,
+    StageWriter,
+    summarise,
+)
 
 logger = get_logger(__name__)
 app = typer.Typer(add_completion=False, help="The public-data demo (plan-public-demo.md).")
@@ -143,6 +161,24 @@ def _write_gif(frames: list[Image], path: Path, fps: float, width: int = 720) ->
     return path
 
 
+@dataclass(frozen=True)
+class CompositeSpec:
+    """What the composite renderer should emit for one arm.
+
+    ``stages`` is a list because the four overlay stages come out of ONE renderer
+    (`mcreid.viz.composite`), so a stage video is an excerpt of the composite
+    rather than a second pipeline that can drift from it.
+    """
+
+    stages: tuple[OverlayStage, ...]
+    out_dir: Path
+    prefix: str
+    fps: float
+    tile_width: int
+    caption: str
+    subcaption: str
+
+
 def _run_arm(
     *,
     label: str,
@@ -153,6 +189,8 @@ def _run_arm(
     backends: dict[str, GpuPerViewBackend],
     dt: float,
     render: bool,
+    bev_units: str = "metres",
+    composite: CompositeSpec | None = None,
 ) -> dict[str, Any]:
     """One pass of the pipeline over pre-loaded frames.
 
@@ -161,27 +199,81 @@ def _run_arm(
     fusion configuration. The caller hands each arm FRESH backends, because
     `PerViewTracker` carries state across frames and a second arm inheriting the
     first arm's tracks would be measuring the first arm.
+
+    ``composite`` renders the camera views beside the BEV, streamed straight to
+    disk. It needs ``render``, because the composite's final panel *is* the BEV,
+    and its cost is reported separately from the pipeline's: a demo renderer that
+    quietly inflated the pipeline's own frame time would corrupt the FPS claim
+    this project makes elsewhere.
     """
+    if composite is not None and not render:
+        raise ValueError("a composite needs the BEV, so it needs render=True")
+
     manager = GlobalIDManager(rig, fusion_config)
-    bev = BevRenderer(rig, canvas_size=BEV_CANVAS, grid_step_m=2.0)
+    bev = BevRenderer(rig, canvas_size=BEV_CANVAS, grid_step_m=2.0, units=bev_units)
+    camera_order = list(frames_by_camera)
 
     snapshots_per_frame: list[list[Any]] = []
     bev_frames: list[Any] = []
     timings: list[float] = []
 
-    for slot, index in enumerate(frame_indices):
-        started = time.perf_counter()
-        views = []
-        for camera_id, images in frames_by_camera.items():
-            views.extend(backends[camera_id].step(images[slot], index))
-        snapshots = manager.step(views, index, dt)
-        timings.append(time.perf_counter() - started)
-        snapshots_per_frame.append(snapshots)
-        if render:
-            bev_frames.append(bev.render(snapshots, index))
+    renderers: dict[OverlayStage, CompositeRenderer] = {}
+    writers: dict[OverlayStage, StageWriter] = {}
+    records: dict[OverlayStage, list[CompositeRecord]] = {}
+    composite_seconds = 0.0
+    if composite is not None:
+        first = frames_by_camera[camera_order[0]][0]
+        frame_size = (int(first.shape[1]), int(first.shape[0]))
+        for stage in composite.stages:
+            renderers[stage] = CompositeRenderer(
+                camera_order, frame_size, stage=stage, tile_width=composite.tile_width
+            )
+            # Constructed before any GPU work: a refused destination should fail
+            # in the first second of the run, not after the detector has run.
+            writers[stage] = StageWriter(
+                composite.out_dir / f"{composite.prefix}_{stage.value}.mp4", composite.fps
+            )
+            records[stage] = []
+
+    try:
+        for slot, index in enumerate(frame_indices):
+            started = time.perf_counter()
+            observations: dict[str, list[Any]] = {}
+            views = []
+            for camera_id, images in frames_by_camera.items():
+                seen = backends[camera_id].step(images[slot], index)
+                observations[camera_id] = list(seen)
+                views.extend(seen)
+            snapshots = manager.step(views, index, dt)
+            timings.append(time.perf_counter() - started)
+            snapshots_per_frame.append(snapshots)
+
+            if render:
+                bev_frame = bev.render(snapshots, index)
+                bev_frames.append(bev_frame)
+                if composite is not None:
+                    assignment = dict(manager.last_assignment)
+                    started_render = time.perf_counter()
+                    for stage, renderer in renderers.items():
+                        built = renderer.render(
+                            {c: frames_by_camera[c][slot] for c in camera_order},
+                            observations,
+                            assignment,
+                            bev_frame,
+                            index,
+                            live_ids=frozenset(s.global_id for s in snapshots),
+                            caption=composite.caption,
+                            subcaption=composite.subcaption,
+                        )
+                        writers[stage].write(built.image)
+                        records[stage].append(built.record)
+                    composite_seconds += time.perf_counter() - started_render
+    finally:
+        for writer in writers.values():
+            writer.close()
 
     visible_ids = {s.global_id for snaps in snapshots_per_frame for s in snaps}
-    return {
+    result: dict[str, Any] = {
         "label": label,
         "snapshots_per_frame": snapshots_per_frame,
         "bev_frames": bev_frames,
@@ -190,6 +282,93 @@ def _run_arm(
         "mean_live_ids_per_frame": float(np.mean([len(s) for s in snapshots_per_frame])),
         "median_ms_per_frame": float(np.median(timings)) * 1000.0,
     }
+    if composite is not None:
+        result["composite"] = _composite_artifact(writers, records, composite_seconds)
+    return result
+
+
+def _composite_artifact(
+    writers: dict[OverlayStage, StageWriter],
+    records: dict[OverlayStage, list[CompositeRecord]],
+    seconds: float,
+) -> dict[str, Any]:
+    """The composite's committed record: hashes, the licence flag, and the two
+    numbers that say whether the video demonstrates anything.
+
+    `contains_dataset_pixels` is **true** here and that is not a failure — it is
+    why the file is not committed. The BEV artifact carries the same key with
+    `false`, and the two together are the whole licence position in machine-
+    readable form: the procedural render ships, the one with footage in it does not.
+    """
+    total_frames = sum(len(r) for r in records.values())
+    stages: dict[str, Any] = {}
+    for stage, writer in writers.items():
+        path = writer.path
+        stats = summarise(records[stage])
+        stages[stage.value] = {
+            "path": path.as_posix(),
+            "sha256": _sha256(path),
+            "bytes": path.stat().st_size,
+            "frames": writer.frames,
+            **stats,
+        }
+    return {
+        "contains_dataset_pixels": True,
+        "committed": False,
+        "why_not_committed": (
+            "every frame is rendered from dataset footage, and CLAUDE.md's rule is that "
+            "anything rendered from the dataset IS the dataset. Written under gitignored "
+            "reports/; mcreid.viz.composite.assert_generated_only refuses any path under "
+            "docs/. Regenerate it with the command in the README."
+        ),
+        "render_seconds": round(seconds, 3),
+        "median_ms_per_composite_frame": (
+            round(seconds * 1000.0 / total_frames, 2) if total_frames else 0.0
+        ),
+        "stages": stages,
+    }
+
+
+def _echo_composite(artifact: dict[str, Any] | None) -> None:
+    """Print the composite's licence position rather than only its filename."""
+    if not artifact:
+        return
+    for name, stage in artifact["stages"].items():
+        typer.echo(
+            f"wrote {stage['path']} ({stage['bytes'] / 1e6:.1f} MB, {stage['frames']} frames, "
+            f"stage '{name}')"
+        )
+    full = artifact["stages"].get("composite")
+    if full is not None:
+        typer.echo(
+            f"  same ID in >=2 camera panels on {full['frames_with_an_id_in_multiple_panels']}"
+            f"/{full['frames']} frames; colour conflicts: {len(full['id_colour_conflicts'])}"
+        )
+    typer.echo(
+        "  NOT COMMITTED — contains dataset pixels. Its hash is in the results JSON; "
+        "the video stays local."
+    )
+
+
+def _parse_stages(value: str) -> tuple[OverlayStage, ...]:
+    """`--stages` -> stages. 'all' is the whole cumulative ladder."""
+    if value.strip().lower() == "all":
+        return ALL_STAGES
+    chosen = []
+    for name in value.split(","):
+        token = name.strip().lower()
+        if not token:
+            continue
+        try:
+            chosen.append(OverlayStage(token))
+        except ValueError as exc:
+            valid = ", ".join(s.value for s in ALL_STAGES)
+            raise typer.BadParameter(f"unknown stage {token!r}; valid: {valid}, all") from exc
+    if not chosen:
+        raise typer.BadParameter("--stages must name at least one stage")
+    # Emit in ladder order regardless of how they were typed, so the artifact's
+    # stage keys read as the progression they are.
+    return tuple(s for s in ALL_STAGES if s in chosen)
 
 
 @app.command("wildtrack")
@@ -199,6 +378,14 @@ def wildtrack(
     reports_dir: Path = typer.Option(
         Path("reports/public_demo"), help="Per-camera overlays — gitignored, never whitelisted."
     ),
+    composite: bool = typer.Option(
+        True, help="Render the composite (camera views + BEV) into --reports-dir."
+    ),
+    stages: str = typer.Option(
+        "composite",
+        help="Overlay stages: raw | boxes | ids | composite, comma-separated, or 'all'.",
+    ),
+    tile_width: int = typer.Option(480, help="Width of one camera tile in the composite."),
     weights: Path = typer.Option(Path("weights/yolo11x.pt"), help="Detector weights."),
     embedder: str = typer.Option(DEFAULT_EMBEDDER),
     imgsz: int = typer.Option(1280, help="Detector input size."),
@@ -277,6 +464,29 @@ def wildtrack(
                     gt_visible[record.person_id][slot, cam_index] = True
 
     dt = 1.0 / fps
+    # The composite is rendered for the CALIBRATED arm only — it is the arm that
+    # ships, and it is the only one with a fused floor plan to show. Rendering the
+    # appearance-only arm too would double the cost to illustrate a collapse that
+    # the numbers already state.
+    spec = (
+        CompositeSpec(
+            stages=_parse_stages(stages),
+            out_dir=reports_dir,
+            prefix="wildtrack",
+            fps=playback_fps,
+            tile_width=tile_width,
+            caption=(
+                "WILDTRACK - 7 cameras, the dataset's own calibration, "
+                "one global ID per person"
+            ),
+            subcaption=(
+                "CROWD REGIME, not the regime this project claims: "
+                "15.6 people/frame in the sparsest window the dataset contains"
+            ),
+        )
+        if composite
+        else None
+    )
     arms = {}
     for label, config, render in (
         ("calibrated", FusionConfig(), True),
@@ -292,6 +502,7 @@ def wildtrack(
             backends=fresh_backends(),
             dt=dt,
             render=render,
+            composite=spec if render else None,
         )
 
     reports = {}
@@ -353,11 +564,13 @@ def wildtrack(
             "contains_dataset_pixels": False,
             "note": (
                 "BEV canvas only — procedural floor grid, identity dots, camera frusta. "
-                "Per-camera overlays are NOT exported here: rendering WILDTRACK frames "
-                "into a shippable asset would be committing the dataset (CLAUDE.md)."
+                "The composite below DOES render WILDTRACK frames and is therefore "
+                "generated locally and never committed (CLAUDE.md)."
             ),
         },
     }
+    if "composite" in arms["calibrated"]:
+        demo["composite"] = arms["calibrated"]["composite"]
     (ARTIFACTS / "public_demo_wildtrack.json").write_text(
         json.dumps(demo, indent=2), encoding="utf-8"
     )
@@ -388,6 +601,7 @@ def wildtrack(
     )
 
     typer.echo(f"\nwrote {mp4} ({mp4.stat().st_size / 1e6:.1f} MB) and {gif}")
+    _echo_composite(demo.get("composite"))
     typer.echo(f"wrote {ARTIFACTS / 'public_demo_wildtrack.json'}")
     typer.echo(f"wrote {ARTIFACTS / 'public_demo_arms.json'}")
     typer.echo("\n| arm | ids shown | ids/frame | switches | pos err |")
@@ -463,6 +677,17 @@ def epfl(
     root: Path = typer.Option(Path("data/epfl_lab"), help="EPFL Laboratory sequence root."),
     sequence: str = typer.Option("6p", help="Which sequence: 4p | 6p."),
     out_dir: Path = typer.Option(Path("docs/assets"), help="Where the BEV artifacts land."),
+    reports_dir: Path = typer.Option(
+        Path("reports/epfl_demo"), help="Composite output — gitignored, never whitelisted."
+    ),
+    composite: bool = typer.Option(
+        True, help="Render the composite (camera views + BEV) into --reports-dir."
+    ),
+    stages: str = typer.Option(
+        "composite",
+        help="Overlay stages: raw | boxes | ids | composite, comma-separated, or 'all'.",
+    ),
+    tile_width: int = typer.Option(480, help="Width of one camera tile in the composite."),
     n_frames: int = typer.Option(60, help="Annotated frames (1 s apart) to run."),
     start: int = typer.Option(0, help="First annotated frame."),
     weights: Path = typer.Option(Path("weights/yolo11x.pt"), help="Detector weights."),
@@ -565,6 +790,25 @@ def epfl(
             # than inventing per-view visibility the dataset never claimed.
             gt_visible[person][slot, :] = True
 
+    spec = (
+        CompositeSpec(
+            stages=_parse_stages(stages),
+            out_dir=reports_dir,
+            prefix=f"epfl_{sequence}",
+            fps=playback_fps,
+            tile_width=tile_width,
+            caption=(
+                "EPFL Laboratory - 4 cameras, 1-5 people in a room, "
+                "one global ID per person"
+            ),
+            subcaption=(
+                "the regime this project claims. GRID-METRIC: distances are in grid cells, "
+                "not metres - the scale is unidentifiable from this dataset"
+            ),
+        )
+        if composite
+        else None
+    )
     arms = {}
     for label, config, render in (
         ("calibrated", epfl_fusion_config(), True),
@@ -580,6 +824,11 @@ def epfl(
             backends=fresh(),
             dt=stride_s,
             render=render,
+            # NOT "metres". This arm is grid-metric and the BEV is the README's
+            # hero image; a canvas hard-coded to print "metres" would put a unit
+            # on the front page that the prose beside it correctly denies.
+            bev_units="grid cells",
+            composite=spec if render else None,
         )
 
     reports = {
@@ -651,6 +900,11 @@ def epfl(
             "contains_dataset_pixels": False,
             "note": "BEV canvas only - procedural. Same licence rule as the WILDTRACK arm.",
         },
+        **(
+            {"composite": arms["calibrated"]["composite"]}
+            if "composite" in arms["calibrated"]
+            else {}
+        ),
         "arms": {
             label: {
                 "ids_issued": arms[label]["n_ids_issued"],
@@ -666,6 +920,7 @@ def epfl(
     (ARTIFACTS / "epfl_demo.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     typer.echo(f"\nwrote {mp4} and {gif}")
+    _echo_composite(summary.get("composite"))
     typer.echo(f"wrote {ARTIFACTS / 'epfl_demo.json'}")
     typer.echo("\n| arm | ids shown | ids/frame | switches | pos err (CELLS) |")
     typer.echo("|---|---|---|---|---|")
