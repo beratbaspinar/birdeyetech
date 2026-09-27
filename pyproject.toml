@@ -26,9 +26,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Perception stack (GPU). Installed separately with the cu126 index.
-# Versions mirror the P1 repo (100_occlusion_mot), which is verified working on
-# this machine's driver 581.86 / CUDA 12.6.
+# Perception stack. The pins are the same on every OS; the index selects the wheel.
+# macOS (Apple MPS, PyPI — do not pass cu126):
+#   uv pip install -e ".[perception]"
+# Linux/Windows CUDA 12.6 (unchanged):
+#   uv pip install -e ".[perception]" --extra-index-url https://download.pytorch.org/whl/cu126
 perception = [
     "torch==2.13.0",
     "torchvision==0.28.0",

@@ -202,6 +202,10 @@ class MultiViewBackend:
 
         images = [frames[cid] for cid in active]
         detections = self.detect_batch(images)
+        self.last_detection_counts = {
+            camera_id: int(view_boxes.shape[0])
+            for camera_id, (view_boxes, _scores) in zip(active, detections, strict=True)
+        }
         boxes = [box for box, _ in detections]
         embeddings = embed_views(self.embedder, images, boxes)
 

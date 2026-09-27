@@ -593,11 +593,27 @@ Writes a 57 s mp4, and with `--gif` the highlights excerpt embedded above. It
 fails loudly if any of the three events stops being detectable in the pipeline's
 output, so it cannot narrate a mechanism that has regressed.
 
-Install the perception stack (CUDA 12.6) for anything involving real video:
+Install the perception stack for anything involving real video.
+
+Linux or Windows, CUDA 12.6:
 
 ```bash
 uv pip install -e ".[perception]" --extra-index-url https://download.pytorch.org/whl/cu126
 ```
+
+macOS (Apple Silicon). The same pins, PyPI's MPS wheel — do not pass the cu126 index:
+
+```bash
+uv pip install -e ".[perception]"
+```
+
+Local mp4s, no dataset. Files are assumed to start together. Without `--calib` the run is appearance-only and draws no metric BEV:
+
+```bash
+uv run mcreid-demo recorded --videos cam0.mp4,cam1.mp4
+```
+
+What was run on the office clips in this checkout, and how to repeat it, is in [LOCAL_TEST.md](LOCAL_TEST.md).
 
 ### WILDTRACK
 

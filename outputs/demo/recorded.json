@@ -1,0 +1,73 @@
+{
+  "device": "mps (Apple MPS, half=False)",
+  "device_kind": "mps",
+  "calibrated": false,
+  "frames": 907,
+  "elapsed_s": 74.07,
+  "processing_fps": 14.23,
+  "detections": {
+    "cam0": 1005,
+    "cam1": 1645
+  },
+  "frames_with_detection": {
+    "cam0": 907,
+    "cam1": 907
+  },
+  "local_tracks_issued": {
+    "cam0": 5,
+    "cam1": 6
+  },
+  "global_ids_issued": 595,
+  "global_ids_shown": [
+    1,
+    254,
+    387
+  ],
+  "frames_per_global_id": {
+    "1": 902,
+    "254": 6,
+    "387": 28
+  },
+  "frames_with_cross_view_track": 894,
+  "multi_camera_ids": [
+    1
+  ],
+  "cameras_ever": {
+    "1": [
+      "cam0",
+      "cam1"
+    ],
+    "254": [
+      "cam0"
+    ],
+    "387": [
+      "cam0"
+    ]
+  },
+  "local_id_switches": {
+    "cam1:3": [
+      1,
+      371,
+      372,
+      373,
+      1
+    ],
+    "cam0:4": [
+      318,
+      324,
+      333,
+      339
+    ],
+    "cam0:5": [
+      387,
+      1
+    ]
+  },
+  "resurrections": 0,
+  "cross_view_cosine_similarity": {
+    "n": 895,
+    "mean": 0.585,
+    "min": 0.42,
+    "max": 0.956
+  }
+}

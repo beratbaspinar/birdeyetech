@@ -8,13 +8,17 @@ GPU cannot itself require one.
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from mcreid.utils import device as device_module
-from mcreid.utils.device import DeviceSpec, probe_compute_device
+from mcreid.utils.device import DeviceSpec, probe_compute_device, resolve_device
 
 CPU = DeviceSpec(kind="cpu", index=None, name="cpu", total_memory_mb=None, use_half=False)
 CUDA = DeviceSpec(kind="cuda", index=0, name="RTX 4060", total_memory_mb=8188, use_half=True)
+MPS = DeviceSpec(kind="mps", index=None, name="Apple MPS", total_memory_mb=None, use_half=False)
 
 
 @pytest.fixture
@@ -56,10 +60,48 @@ def test_cuda_passes_and_returns_the_resolved_spec(resolves_to):
     assert probe_compute_device("auto", "mcreid-wildtrack run") is CUDA
 
 
+def test_mps_passes_the_probe(resolves_to):
+    resolves_to(MPS)
+    assert probe_compute_device("auto", "mcreid-demo recorded") is MPS
+
+
 def test_the_request_is_forwarded_verbatim(resolves_to):
     calls = resolves_to(CUDA)
     probe_compute_device("cuda:1", "task", allow_half=False)
     assert calls == [("cuda:1", False)]
+
+
+def _fake_torch(*, cuda: bool, mps: bool) -> SimpleNamespace:
+    props = SimpleNamespace(name="Fake CUDA", total_memory=8 * 1024 * 1024 * 1024)
+    return SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: cuda,
+            device_count=lambda: 1 if cuda else 0,
+            get_device_properties=lambda index: props,
+        ),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)),
+    )
+
+
+def test_auto_prefers_cuda_then_mps_then_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda=True, mps=True))
+    assert resolve_device("auto").kind == "cuda"
+    assert resolve_device("auto").use_half is True
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda=False, mps=True))
+    spec = resolve_device("auto")
+    assert spec.kind == "mps"
+    assert spec.torch_device == "mps"
+    assert spec.use_half is False
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda=False, mps=False))
+    assert resolve_device("auto").kind == "cpu"
+
+
+def test_explicit_mps_fails_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(cuda=True, mps=False))
+    with pytest.raises(RuntimeError, match="mps"):
+        resolve_device("mps")
 
 
 def test_a_cpu_request_still_stops_unless_allow_cpu_says_otherwise(resolves_to):

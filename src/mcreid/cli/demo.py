@@ -2,7 +2,7 @@
 
 Modes:
     synthetic   scripted toy scene, no footage or GPU required (works today)
-    recorded    four video files + a calib.json  (needs footage; G-M1-2)
+    recorded    local videos through the existing perception pipeline
     live        webcams                          (needs footage/hardware; G-M1-2)
 """
 
@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 import typer
 
-from mcreid.calib.schema import RigCalib
+from mcreid.cli.recorded import parse_video_args, run_recorded, videos_in_dir
 from mcreid.eval.id_metrics import evaluate_id_consistency
 from mcreid.fusion.global_id import FusionConfig
 from mcreid.fusion.types import TrackState, ViewObservation
@@ -25,6 +25,7 @@ from mcreid.pipeline import MultiViewPipeline
 from mcreid.sim.render import ToySceneRenderer
 from mcreid.sim.toy import cardboard_scene, crossing_scene, generate_scene
 from mcreid.track.per_view import Detection
+from mcreid.track.reid_models import DEFAULT_EMBEDDER
 from mcreid.utils.logging import get_logger, setup_logging
 from mcreid.utils.seed import DEFAULT_SEED, seed_everything
 from mcreid.viz.bev import BevRenderer
@@ -244,35 +245,59 @@ def synthetic(
 
 @app.command()
 def recorded(
-    calib: Path = typer.Option(..., help="Path to calib.json produced by mcreid-calibrate."),
-    footage: Path = typer.Option(..., help="Directory holding one video per camera."),
-    out_dir: Path = typer.Option(Path("outputs/demo")),
+    videos: str = typer.Option(
+        None,
+        help="Comma-separated video paths. The filename stem is the camera id.",
+    ),
+    footage: Path = typer.Option(
+        None, help="Directory of video files, used when --videos is omitted."
+    ),
+    calib: Path = typer.Option(
+        None,
+        help=(
+            "Optional calib.json. Without it, cross-camera fusion is appearance-only "
+            "and there is no metric BEV."
+        ),
+    ),
+    out: Path = typer.Option(Path("outputs/demo/recorded.mp4"), help="Output mp4."),
+    weights: Path = typer.Option(
+        Path("weights/yolo11s.pt"),
+        help="Local detector weights. Not downloaded. yolo11s ~19 MB, yolo11x ~110 MB.",
+    ),
+    embedder: str = typer.Option(DEFAULT_EMBEDDER, help="Local appearance model."),
+    weights_dir: Path = typer.Option(Path("weights"), help="Directory for the OSNet checkpoint."),
+    imgsz: int = typer.Option(960, help="Detector input size (multiple of 32)."),
+    conf: float = typer.Option(0.35, help="Detection confidence floor."),
+    device: str = typer.Option("auto", help="auto | cpu | mps | cuda | cuda:N."),
+    allow_cpu: bool = typer.Option(False, help="Run even if the probe resolves to CPU."),
+    max_frames: int = typer.Option(0, help="Stop after N frames (0 = until a video ends)."),
+    span_m: float = typer.Option(6.0, help="Pixel-plane span used only when --calib is omitted."),
     log_level: str = typer.Option("INFO"),
 ) -> None:
-    """Run on recorded 4-view footage. Requires the perception extra.
+    """Track people in local videos with the existing detector, embedder and fusion.
 
-    Validates the calibration and footage layout today; the detector front-end
-    lands with G-M1-2, which is blocked on the capture session. Everything
-    downstream of detection is already exercised by `mcreid-demo synthetic`.
+    Videos are assumed to start at the same moment. Pass `--calib` for metric
+    ground fusion and a BEV; omit it for appearance-only cross-camera association.
     """
     setup_logging(log_level)
-    rig = RigCalib.load(calib)
-    logger.info("loaded rig with %d camera(s): %s", len(rig.cameras), rig.camera_ids)
-
-    if not footage.is_dir():
-        raise typer.BadParameter(f"footage directory not found: {footage}")
-    missing = [c for c in rig.camera_ids if not list(footage.glob(f"{c}.*"))]
-    if missing:
-        raise typer.BadParameter(f"no video found for camera(s) {missing} in {footage}")
-    logger.info("footage layout OK for %s", rig.camera_ids)
-
-    typer.echo(
-        "Calibration and footage layout validated.\n"
-        "The recorded-mode detector front-end (YOLO11 + BoT-SORT + ReID) lands with "
-        "G-M1-2, which is blocked on the capture session — see capture_guide.md.\n"
-        "Run `mcreid-demo synthetic` for the full end-to-end path today."
+    if (videos is None) == (footage is None):
+        raise typer.BadParameter("pass exactly one of --videos or --footage")
+    paths = videos_in_dir(footage) if footage is not None else parse_video_args(videos or "")
+    written = run_recorded(
+        paths,
+        calib=calib,
+        out=out,
+        weights=weights,
+        embedder=embedder,
+        weights_dir=weights_dir,
+        imgsz=imgsz,
+        conf=conf,
+        device=device,
+        allow_cpu=allow_cpu,
+        max_frames=max_frames,
+        span_m=span_m,
     )
-    raise typer.Exit(code=2)
+    typer.echo(f"wrote {written}")
 
 
 @app.callback()

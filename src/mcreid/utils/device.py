@@ -7,6 +7,7 @@ torch is an optional dependency (perception extra); everything here degrades to
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from mcreid.utils.logging import get_logger
 
@@ -17,7 +18,7 @@ logger = get_logger(__name__)
 class DeviceSpec:
     """Resolved compute device."""
 
-    kind: str  # "cuda" | "cpu"
+    kind: str  # "cuda" | "mps" | "cpu"
     index: int | None
     name: str
     total_memory_mb: int | None
@@ -32,53 +33,82 @@ class DeviceSpec:
         return f"{self.torch_device} ({self.name}{mem}, half={self.use_half})"
 
 
+def _cpu() -> DeviceSpec:
+    return DeviceSpec(kind="cpu", index=None, name="cpu", total_memory_mb=None, use_half=False)
+
+
+def _mps_available(torch: Any) -> bool:
+    backend = getattr(getattr(torch, "backends", None), "mps", None)
+    return bool(backend is not None and backend.is_available())
+
+
 def resolve_device(requested: str = "auto", allow_half: bool = True) -> DeviceSpec:
-    """Resolve ``requested`` ("auto" | "cpu" | "cuda" | "cuda:N") to a DeviceSpec.
+    """Resolve ``requested`` ("auto" | "cpu" | "mps" | "cuda" | "cuda:N").
+
+    ``auto`` prefers CUDA, then Apple MPS, then CPU. Half precision stays
+    CUDA-only: MPS runs fp32.
 
     Raises:
-        RuntimeError: if CUDA was explicitly requested but is unavailable (fail fast —
-            silently degrading to CPU would hide a 20x slowdown behind a green demo).
+        RuntimeError: if CUDA or MPS was explicitly requested but is unavailable.
     """
     requested = requested.strip().lower()
-    if requested not in {"auto", "cpu"} and not requested.startswith("cuda"):
+    if requested not in {"auto", "cpu", "mps"} and not requested.startswith("cuda"):
         raise ValueError(f"unsupported device string: {requested!r}")
 
     if requested == "cpu":
-        return DeviceSpec(kind="cpu", index=None, name="cpu", total_memory_mb=None, use_half=False)
+        return _cpu()
 
     try:
         import torch
     except ImportError:
-        if requested.startswith("cuda"):
+        if requested.startswith("cuda") or requested == "mps":
             raise RuntimeError(
-                "device='cuda' requested but torch is not installed. "
-                "Install the perception extra: uv pip install -e '.[perception]'"
+                f"device={requested!r} requested but torch is not installed. "
+                "Install the perception extra. On macOS use PyPI "
+                "(uv pip install -e '.[perception]'), not the cu126 index."
             ) from None
         logger.info("torch unavailable — falling back to cpu")
-        return DeviceSpec(kind="cpu", index=None, name="cpu", total_memory_mb=None, use_half=False)
+        return _cpu()
 
-    if not torch.cuda.is_available():
-        if requested.startswith("cuda"):
-            raise RuntimeError("device='cuda' requested but torch.cuda.is_available() is False")
-        logger.info("CUDA unavailable — falling back to cpu")
-        return DeviceSpec(kind="cpu", index=None, name="cpu", total_memory_mb=None, use_half=False)
-
-    index = 0
-    if requested.startswith("cuda:"):
-        index = int(requested.split(":", 1)[1])
-        if index >= torch.cuda.device_count():
-            raise RuntimeError(f"cuda:{index} requested but only {torch.cuda.device_count()} found")
-
-    props = torch.cuda.get_device_properties(index)
-    spec = DeviceSpec(
-        kind="cuda",
-        index=index,
-        name=props.name,
-        total_memory_mb=int(props.total_memory // (1024 * 1024)),
-        use_half=allow_half,
+    want_cuda = requested.startswith("cuda") or (
+        requested == "auto" and torch.cuda.is_available()
     )
-    logger.info("resolved device: %s", spec)
-    return spec
+    if want_cuda:
+        if not torch.cuda.is_available():
+            raise RuntimeError("device='cuda' requested but torch.cuda.is_available() is False")
+        index = 0
+        if requested.startswith("cuda:"):
+            index = int(requested.split(":", 1)[1])
+            if index >= torch.cuda.device_count():
+                raise RuntimeError(
+                    f"cuda:{index} requested but only {torch.cuda.device_count()} found"
+                )
+        props = torch.cuda.get_device_properties(index)
+        spec = DeviceSpec(
+            kind="cuda",
+            index=index,
+            name=props.name,
+            total_memory_mb=int(props.total_memory // (1024 * 1024)),
+            use_half=allow_half,
+        )
+        logger.info("resolved device: %s", spec)
+        return spec
+
+    if requested in {"auto", "mps"} and _mps_available(torch):
+        spec = DeviceSpec(
+            kind="mps",
+            index=None,
+            name="Apple MPS",
+            total_memory_mb=None,
+            use_half=False,
+        )
+        logger.info("resolved device: %s", spec)
+        return spec
+    if requested == "mps":
+        raise RuntimeError("device='mps' requested but torch.backends.mps.is_available() is False")
+
+    logger.info("CUDA and MPS unavailable — falling back to cpu")
+    return _cpu()
 
 
 def probe_compute_device(
@@ -107,12 +137,13 @@ def probe_compute_device(
         RuntimeError: CPU resolved and ``allow_cpu`` is False.
     """
     spec = resolve_device(requested, allow_half=allow_half)
-    if spec.kind != "cuda" and not allow_cpu:
+    # MPS is a GPU. Only a CPU resolution is the slow path this probe exists to stop.
+    if spec.kind == "cpu" and not allow_cpu:
         # ASCII on purpose. This string is read on a Windows console that mangles
         # the em-dashes and section signs used everywhere else in this repo, and a
         # STOP message full of replacement characters reads like a second bug.
         raise RuntimeError(
-            f"{task}: environment probe FAILED - resolved to {spec.torch_device}, not cuda.\n"
+            f"{task}: environment probe FAILED - resolved to {spec.torch_device}, not cuda or mps.\n"
             "This is a STOP (refactored_method.md section 5), not a slow run: on CPU this job "
             "is ~20x longer and every number it produces arrives too late to be worth having.\n"
             "Diagnose first - driver, the perception extra, CUDA_VISIBLE_DEVICES - then either "

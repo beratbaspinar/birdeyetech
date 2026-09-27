@@ -42,6 +42,11 @@ htmlcov/
 *.avi
 *.mkv
 *.gif
+# Local office test, committed on purpose so another checkout can replay it.
+# These are our own camera files, not WILDTRACK/EPFL. Exact names only.
+!/cam0.mp4
+!/cam1.mp4
+!/outputs/demo/recorded.mp4
 # Whitelist ONE vetted asset by exact name, not a directory glob. The previous
 # `!docs/assets/*.gif` let a 5.9 MB animation of real WILDTRACK frames into
 # history — the dataset this repo promises never to commit (see
@@ -71,7 +76,13 @@ htmlcov/
 *.calib.json
 
 # --- outputs ---
-/outputs/
+# Directory itself stays visible so the two lines below can be re-included.
+# Git cannot un-ignore a file inside an excluded directory.
+/outputs/*
+!/outputs/demo/
+/outputs/demo/*
+!/outputs/demo/recorded.mp4
+!/outputs/demo/recorded.json
 /logs/
 /results/
 /runs/
