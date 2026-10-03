@@ -9,6 +9,197 @@ is where a purely geometric, zero-training system does well, and the project is
 scoped to it deliberately. Where it stops working is measured and written down
 rather than left out: see [Stress test](#stress-test--where-this-breaks-and-why).
 
+## Current state of this checkout
+
+This tree is the upstream tracker plus the local work used to *show* it. The
+detector, the OSNet embedder, the per-view tracker, and the fusion were not
+replaced. What was added is a way to watch EPFL on consecutive frames, a
+schematic map for that window, an Apple MPS device path, a two-camera office
+replay, and a local fair-loop assembler. The published EPFL and WILDTRACK
+numbers later in this file were not recomputed for those additions.
+
+### Install
+
+Python **3.11 only** (`requires-python >=3.11,<3.12`). Use
+[uv](https://docs.astral.sh/uv/).
+
+Core only — calibration, fusion, synthetic scenes, tests. No torch:
+
+```bash
+uv venv --python 3.11
+uv pip install -e ".[dev]"
+```
+
+Real video needs the perception extra. On macOS, PyPI's wheel (Apple MPS). Do
+not pass the CUDA index:
+
+```bash
+uv pip install -e ".[dev,perception]"
+```
+
+Linux or Windows, CUDA 12.6:
+
+```bash
+uv pip install -e ".[dev,perception]" --extra-index-url https://download.pytorch.org/whl/cu126
+```
+
+Weights are not in git. Before any real-video command, put these under
+`weights/` (the directory and `*.pt` / `*.pth` are gitignored):
+
+| file | used for |
+|---|---|
+| `weights/yolo11x.pt` | published EPFL and WILDTRACK detector |
+| `weights/yolo11s.pt` | interactive EPFL window and the office replay, when speed matters |
+| `weights/osnet_x1_0_msmt17.pth` | appearance. URL and SHA-256 are `OSNET_MSMT17` in `src/mcreid/track/reid_models.py` |
+
+`auto` device order is CUDA, then Apple MPS, then CPU. MPS runs fp32
+(`half=False`). The long EPFL and WILDTRACK jobs refuse CPU unless
+`--allow-cpu`. On the machine that timed the live window below, CUDA was
+absent and the probe resolved to MPS.
+
+### What runs, and what each command is for
+
+| you want | command | GPU / weights | writes |
+|---|---|---|---|
+| Watch EPFL while inference runs | `uv run mcreid-public-demo epfl --live-view --live-start 100` | perception; `yolo11x` by default | one OpenCV window. No benchmark files |
+| Same window, faster, labelled as not the benchmark | add `--weights weights/yolo11s.pt` | `yolo11s` | same window |
+| Schematic 56×56 plate instead of the working map | add `--presentation-map` | same | display only |
+| Offline EPFL benchmark (the GIF on this page) | `uv run mcreid-public-demo epfl --stages all` | `yolo11x`, 60 frames 1 s apart | `docs/assets/epfl_demo_bev.gif` and gitignored `reports/epfl_demo/` |
+| Prove the EPFL homography before believing a number | `uv run python scripts/check_epfl_instrument.py` | none for the geometry check | stdout |
+| Two office cameras, no floor | `uv run mcreid-demo recorded --videos cam0.mp4,cam1.mp4` | `yolo11s` + OSNet | `outputs/demo/recorded.mp4` |
+| Synthetic occlusion scene | `uv run mcreid-demo synthetic --scenario cardboard` | no weights | `outputs/demo/cardboard.mp4`. Exit code 1 is the current bar |
+| Narrated synthetic walkthrough | `uv run mcreid-hpc-demo --out reports/hpc_demo.mp4` | no weights | gitignored mp4 |
+| WILDTRACK crowd stress test | `uv run mcreid-public-demo wildtrack` | CUDA expected; `--allow-cpu` to override | procedural BEV only in `docs/assets/` |
+| One webcam | `uv run mcreid-live --device 0` | perception | optional clip under `reports/` |
+| Several webcams, no shared floor | `uv run mcreid-live-multi run --devices 0,1` | perception | raw recording + timestamp CSV |
+
+Fetch EPFL once (~310 MB, no registration). The script downloads only
+`6p-c0.avi` … `6p-c3.avi`, `calibration-6p.txt`, and `gt_lab_6p.txt` into
+gitignored `data/epfl_lab/`:
+
+```bash
+uv run python scripts/fetch_epfl.py
+```
+
+There is **no floor-plan image** in that set or in this repo. The `358×360`
+constant in `src/mcreid/calib/epfl.py` is the homography's pixel frame, not a
+bitmap.
+
+### Watch EPFL — consecutive frames, one window
+
+The GIF at the top is a bird's-eye view of the *benchmark* path: 60 labelled
+frames, one per second. `--live-view` does not play that file back. It opens
+the four `6p-c*.avi` files together and, on every step, runs the existing
+stack on the next real frame:
+
+detection → OSNet embedding → per-view tracking → cross-camera fusion →
+the dataset's own ground-plane homography.
+
+```bash
+uv run mcreid-public-demo epfl --live-view --live-start 100 --presentation-map
+```
+
+Faster on a laptop, and labelled on screen as a demo configuration:
+
+```bash
+uv run mcreid-public-demo epfl --live-view --live-start 100 --presentation-map --weights weights/yolo11s.pt
+```
+
+The window is 1920×1080. Left: four cameras, each box labelled `G` global id,
+`L` local id, and confidence. Right: the map, with the global id, the current
+grid-cell position, and a trail of the last 25 inferred frames. The banner
+prints the measured inference rate, for example `Inference: 7.1 FPS`. If the
+machine is slower than the file's 25 fps, frames are **not** dropped. You
+watch the real rate.
+
+People are not really in view until around video frame 100–120. `--live-start
+100` skips the empty opening. `--live-frames N` stops after N inferred frames
+(`0` runs until `q` or the end of the files). `--live-snapshot-dir DIR` saves
+a few preview PNGs; omit it and nothing is written.
+
+| key | what it does |
+|---|---|
+| `q` or Esc | quit |
+| space | pause / resume |
+| `r` | restart at `--live-start`. New trackers, same loaded weights |
+| `a` or left | previous frame this process has already inferred |
+| `d` or right | one frame forward. Infers it if you are at the frontier |
+| `m` | schematic plate ↔ the working map |
+| `f` | show or hide camera coverage polygons |
+
+Ground-truth positions are parsed only to read the 56×56 grid header and to
+log where the first annotated slot is. They are not passed to detection,
+tracking, or fusion. The per-view tracker on this path uses the normal
+`n_init=2`. The 1 Hz benchmark still uses `n_init=1`, because boxes a second
+apart do not overlap; that workaround is not applied to the live window.
+
+**One live-only fusion change, and it is a cap, not a new tracker.** The
+published config rejects a foot whose positional sigma is above **4.5 cells**.
+A person who fills the 288 px frame has a box on the image border; fusion then
+multiplies that foot's variance by 9, the sigma climbs past 4.5, and the dot
+freezes while all four cameras still see the person. `--live-view` copies the
+config and widens only `max_position_sigma_m` to **8.5 cells**.
+`epfl_fusion_config()` stays at 4.5, and the offline benchmark still calls
+that function. A foot near the horizon, whose sigma is tens of cells, is still
+rejected.
+
+**Measured on this Mac (Apple MPS, imgsz 640, conf 0.25, consecutive frames,
+warmup excluded):** YOLO11x about **2.1 FPS**, YOLO11s about **7.1 FPS**. The
+four cameras reported the same frame index. The map point moved between
+frames. The global id on the boxes matched the id on the map. These rates are
+this machine, not a claimed product FPS.
+
+### Presentation map
+
+`--presentation-map` changes the drawing, not the coordinates. Dots still land
+through the same `to_pixels` on the dataset's `0…56 × 0…56` grid. The plate is
+a flat schematic of that extent: no walls, doors, or furniture, because none
+could be read out of the files. The canvas says `SCHEMATIC (grid cells)` and
+`SCHEMATIC 56x56 grid - no floor-plan image`. Coverage polygons start hidden;
+`f` draws them, `m` returns to the working map (polygons on). Without the
+flag, the live window is the previous working map.
+
+Axes say **grid cells**. The metric scale is unidentifiable from this dataset
+(no intrinsics; a vertical 1.75 m head plane on only 2 of 4 cameras). A label
+containing "metre" is refused.
+
+### Office clips, fair loop, and what is not in git
+
+`cam0.mp4` and `cam1.mp4` are our own office recordings and are whitelisted
+into git. They are 1080×1920. Root `calib.json` is a later bedroom
+calibration at a different resolution; it is **not** applied to these clips.
+The office command is appearance-only: one shared id across the two views, no
+metric floor. The run that is checked in held global ID 1 on both cameras.
+Full table: [LOCAL_TEST.md](LOCAL_TEST.md).
+
+`presentation/build_fair_loop.py` stitches three already-rendered videos into
+`presentation/fair_demo_loop.mp4` (1920×1080). It does not run inference. The
+mp4 is not in git: `*.mp4` is ignored, and the EPFL segment is dataset
+footage. Rebuild the inputs first (`recorded.mp4`, `reports/hpc_demo.mp4`,
+`reports/epfl_demo/epfl_6p_composite.mp4`), then run the script. Do not commit
+the result.
+
+Also absent from git, on purpose: `data/`, `weights/`, `reports/`, and any
+render that contains EPFL or WILDTRACK pixels. The GIFs in `docs/assets/` are
+either synthetic or a procedural bird's-eye canvas that cannot take an image
+argument.
+
+### What this checkout does not claim
+
+- An identity does not "never break". On the EPFL 60-frame benchmark the
+  calibrated arm still churns (27 ID switches) and the formal distinct-identity
+  clause is a tie. See the table under the first GIF.
+- WILDTRACK is a crowd, and the calibrated arm over-segments it. It is a
+  failure analysis, not the booth hero.
+- There is no web UI in this tree. No FastAPI, no WebSocket, no frontend.
+- The numpy invalid-divide warning in `src/mcreid/fusion/associate.py` still
+  fires on the live window and on the synthetic demo. It was left as-is; the
+  id still held on the runs above.
+
+The rest of this file is the measured record: EPFL sparse demo, WILDTRACK
+stress test, synthetic gates, calibration, and the limits. Those sections were
+not rewritten to sound like the live window.
+
 **Zero training by us.** Every component is off-the-shelf and pretrained by
 someone else — YOLO11x on COCO for detection, OSNet on MSMT17 for appearance —
 and none of them has seen any evaluation data used here. The fusion is geometric.
@@ -525,6 +716,10 @@ into gitignored `reports/epfl_demo/`. Drop `--stages all` for the composite alon
 `--no-composite` skips it entirely. The composite is never committed, for the
 reason in [Licence](#licence).
 
+To watch the same pipeline on consecutive video frames instead of that
+1 Hz export, use `--live-view`. Flags, keys, the 8.5-cell live cap, and the
+schematic map are in [Current state of this checkout](#current-state-of-this-checkout).
+
 ### The crowd demo (the second GIF)
 
 Two commands from a clean clone. The first downloads WILDTRACK (~7 GB,
@@ -973,7 +1168,7 @@ src/mcreid/
   live.py        single-camera live session (testable without a camera or GPU)
   live_multi.py  N-camera live session, appearance-only fusion (likewise testable)
   cli/      calibrate · demo · live · live-multi · sync · eval · wildtrack ·
-            wildtrack-demo · hpc-demo
+            wildtrack-demo · hpc-demo · public-demo · epfl_live (window only)
 ```
 
 - [docs/wildtrack_results.md](docs/wildtrack_results.md) — real-footage validation
