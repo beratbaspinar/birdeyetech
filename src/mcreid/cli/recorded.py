@@ -204,7 +204,10 @@ def run_recorded(
         ),
     )
     session = MultiLiveSession(
-        backend, rig, MultiLiveConfig(span_m=span_m, show_bev=metric), metric=metric
+        backend,
+        rig,
+        MultiLiveConfig(span_m=span_m, show_bev=metric, bev_trail_length=900),
+        metric=metric,
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     writer: cv2.VideoWriter | None = None
@@ -216,6 +219,7 @@ def run_recorded(
     both_views = 0
     gid_frames: dict[int, int] = {}
     cross_sims: list[float] = []
+    world_gaps: dict[int, list[float]] = {}
     started = time.perf_counter()
 
     def _consume(step_index: int, step_dt: float, frames: dict[str, Image]) -> None:
@@ -243,6 +247,22 @@ def run_recorded(
             gid_frames[gid] = gid_frames.get(gid, 0) + 1
         if stats["multi_camera_tracks"]:
             both_views += int(stats["multi_camera_tracks"])
+        if metric:
+            by_cam: dict[int, dict[str, np.ndarray]] = {}
+            for ground in session.manager.last_ground:
+                gid = session.manager.last_assignment.get(
+                    (ground.camera_id, ground.local_track_id)
+                )
+                if gid is None:
+                    continue
+                by_cam.setdefault(gid, {})[ground.camera_id] = np.asarray(
+                    ground.world_xy, dtype=np.float64
+                )
+            for gid, cams in by_cam.items():
+                if "cam0" in cams and "cam1" in cams:
+                    world_gaps.setdefault(gid, []).append(
+                        float(np.linalg.norm(cams["cam0"] - cams["cam1"]))
+                    )
         for vectors in by_gid.values():
             if len(vectors) < 2:
                 continue
@@ -292,12 +312,26 @@ def run_recorded(
         "local_tracks_issued": {cid: tracker._next_id for cid, tracker in backend.trackers.items()},
         "global_ids_issued": session.manager.n_ids_issued,
         "global_ids_shown": session.reported_ids,
+        "conf": conf,
         "frames_per_global_id": gid_frames,
         "frames_with_cross_view_track": both_views,
+        "frames_both_cameras": {
+            str(gid): int(session.ledger.frames_multi.get(gid, 0)) for gid in session.reported_ids
+        },
         "multi_camera_ids": session.ledger.multi_camera_ids,
         "cameras_ever": {str(gid): sorted(cams) for gid, cams in session.ledger.cameras_ever.items()},
         "local_id_switches": switches,
         "resurrections": session.manager.dormant.n_resurrected,
+        "cross_camera_world_gap_m": {
+            str(gid): {
+                "n": len(gaps),
+                "mean": round(float(np.mean(gaps)), 3),
+                "median": round(float(np.median(gaps)), 3),
+                "p95": round(float(np.percentile(gaps, 95)), 3),
+                "max": round(float(np.max(gaps)), 3),
+            }
+            for gid, gaps in sorted(world_gaps.items())
+        },
         "cross_view_cosine_similarity": {
             "n": len(cross_sims),
             "mean": None if not cross_sims else round(float(np.mean(cross_sims)), 3),

@@ -51,6 +51,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
+from mcreid.calib.geometry import feet_point
 from mcreid.calib.schema import CameraCalib, RigCalib
 from mcreid.diagnostics.shadow import ShadowProbe
 from mcreid.fusion.global_id import FusionConfig, GlobalIDManager
@@ -255,6 +256,10 @@ class MultiLiveConfig:
     """Draw the metric floor plan. Ignored unless the rig is calibrated — a BEV
     built on pixel-plane stand-ins would be a map of nothing, drawn to scale."""
     bev_size: int = 480
+    bev_trail_length: int = 45
+    """How many past floor positions each global ID keeps on the BEV. The live
+    default is a short tail. A recorded clip can raise it so the whole walk
+    stays on the plan."""
 
 
 class MultiLiveSession:
@@ -298,7 +303,7 @@ class MultiLiveSession:
                 rig,
                 canvas_size=(self.config.bev_size, self.config.bev_size),
                 grid_step_m=1.0,
-                trail_length=45,
+                trail_length=self.config.bev_trail_length,
             )
 
     # --- metrics ----------------------------------------------------------
@@ -456,6 +461,33 @@ class MultiLiveSession:
             cv2.putText(
                 canvas, label, (left + 6, top + th + 3), _FONT, 0.55, (0, 0, 0), 2, cv2.LINE_AA
             )
+
+            if self.metric:
+                foot = feet_point(box)[0]
+                foot_px = (int(round(foot[0])), int(round(foot[1])))
+                cv2.drawMarker(
+                    canvas, foot_px, colour, cv2.MARKER_CROSS, 16, 2, cv2.LINE_AA
+                )
+                ground = next(
+                    (
+                        g
+                        for g in self.manager.last_ground
+                        if g.camera_id == camera_id and g.local_track_id == obs.local_track_id
+                    ),
+                    None,
+                )
+                if ground is not None:
+                    xy = f"{ground.world_xy[0]:.2f},{ground.world_xy[1]:.2f}m"
+                    cv2.putText(
+                        canvas,
+                        xy,
+                        (foot_px[0] + 10, min(foot_px[1] + 4, canvas.shape[0] - 8)),
+                        _FONT,
+                        0.45,
+                        colour,
+                        1,
+                        cv2.LINE_AA,
+                    )
 
         cv2.putText(canvas, camera_id, (10, 26), _FONT, 0.7, TEXT_COLOR, 2, cv2.LINE_AA)
         return canvas
