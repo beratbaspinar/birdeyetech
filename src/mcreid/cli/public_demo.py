@@ -58,6 +58,7 @@ from mcreid.calib.epfl import (
     parse_calibration,
     parse_ground_truth,
 )
+from mcreid.cli.epfl_live import format_live_summary, run_epfl_live_view
 from mcreid.eval.id_metrics import evaluate_id_consistency
 from mcreid.eval.wildtrack import load_annotations, load_rig
 from mcreid.fusion.associate import AssociationConfig
@@ -699,12 +700,44 @@ def epfl(
     allow_cpu: bool = typer.Option(False, help="Run even if the probe resolves to CPU."),
     seed: int = typer.Option(DEFAULT_SEED),
     log_level: str = typer.Option("INFO"),
+    live_view: bool = typer.Option(
+        False,
+        "--live-view",
+        help=(
+            "Open one window and run the pipeline on consecutive video frames. "
+            "Does not write the benchmark mp4, gif, JSON, or composite."
+        ),
+    ),
+    live_start: int = typer.Option(
+        0,
+        help="With --live-view, first video frame. Later frames are read in order.",
+    ),
+    live_frames: int = typer.Option(
+        0,
+        help="With --live-view, stop after this many frames. 0 runs until q or the end.",
+    ),
+    live_snapshot_dir: Path | None = typer.Option(
+        None,
+        help="With --live-view, save a few preview PNGs here. Omit to write nothing.",
+    ),
+    presentation_map: bool = typer.Option(
+        False,
+        "--presentation-map",
+        help=(
+            "With --live-view, draw a schematic plate on the dataset's own grid "
+            "and hide camera coverage polygons. Not a measured floor plan."
+        ),
+    ),
 ) -> None:
     """The SPARSE demo: 4-6 people in a room, 4 cameras, the dataset's own calibration.
 
     This is the regime `context.md` §1 actually scopes 102 to, and the only public
     dataset on hand that contains it. Distances are in GRID CELLS, not metres —
     see the module note and deviation-log row 3.
+
+    ``--live-view`` watches consecutive frames in one window. It does not read
+    ground-truth positions into the tracker and it does not write the benchmark
+    artifacts.
     """
     setup_logging(log_level)
     seed_everything(seed)
@@ -719,6 +752,29 @@ def epfl(
     typer.echo(
         f"{len(rig.cameras)} cameras, grid {grid[0]}x{grid[1]}, GRID-METRIC (1 unit = 1 cell)"
     )
+
+    if live_view:
+        if live_start < 0 or live_frames < 0:
+            raise typer.BadParameter("--live-start and --live-frames must be >= 0")
+        summary = run_epfl_live_view(
+            root=root,
+            sequence=sequence,
+            rig=rig,
+            fusion_config=epfl_fusion_config(),
+            image_size=EPFL_IMAGE_SIZE,
+            weights=weights,
+            embedder_name=embedder,
+            imgsz=imgsz,
+            conf=conf,
+            device=device,
+            start_frame=live_start,
+            max_frames=live_frames,
+            annotated_from_frame=min(positions) if positions else None,
+            snapshot_dir=live_snapshot_dir,
+            presentation_map=presentation_map,
+        )
+        typer.echo(format_live_summary(summary))
+        return
 
     captures = [
         cv2.VideoCapture(str(root / f"{sequence}-c{i}.avi")) for i in range(len(rig.cameras))

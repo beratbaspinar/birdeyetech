@@ -51,6 +51,17 @@ class BevRenderer:
         self.grid_step_m = grid_step_m
         self.max_labelled_tracks = max_labelled_tracks
         self.units = units
+        # "working" is the benchmark canvas. "schematic" is a display plate on the
+        # same world coordinates: the rig's own grid extent, not a surveyed room.
+        self.appearance = "working"
+        self._shown: (
+            tuple[
+                list[GlobalTrackSnapshot],
+                int | None,
+                dict[str, tuple[float, float]] | None,
+            ]
+            | None
+        ) = None
         """What one world unit IS. Not cosmetic: the EPFL arm is GRID-METRIC —
         its scale is unidentifiable from the dataset (deviation-log row 3) — and a
         canvas hard-coded to print "metres" puts a false unit on the artifact that
@@ -82,6 +93,10 @@ class BevRenderer:
         return int(round(col)), int(round(row))
 
     def _blank(self) -> Image:
+        if self.appearance == "schematic":
+            return self._schematic_blank()
+        if self.appearance != "working":
+            raise ValueError(f"unknown BEV appearance {self.appearance!r}")
         canvas = np.full(
             (self.canvas_size[1], self.canvas_size[0], 3), FLOOR_COLOR[0], dtype=np.uint8
         )
@@ -98,6 +113,52 @@ class BevRenderer:
             c0 = self.to_pixels((x0, y))
             c1 = self.to_pixels((x1, y))
             cv2.line(canvas, c0, c1, GRID_COLOR, 1, cv2.LINE_AA)
+        return canvas
+
+    def _schematic_blank(self) -> Image:
+        """A plate on the rig's own grid. No walls, furniture, or measured plan.
+
+        The dataset ships no top-view image. The rectangle is ``floor_extent``
+        — the same coordinates ``to_pixels`` already uses — drawn so a viewer
+        can see the grid without the coverage wash. It is not a room survey.
+        """
+        if "cell" not in self.units.casefold():
+            raise ValueError(
+                "the schematic plate is the dataset grid, not a metric floor plan; "
+                f"units are {self.units!r}"
+            )
+        margin = (14, 14, 16)
+        plate = (42, 46, 52)
+        line = (78, 82, 88)
+        edge = (196, 198, 202)
+        canvas = np.full((self.canvas_size[1], self.canvas_size[0], 3), margin, dtype=np.uint8)
+        x0, y0, x1, y1 = self.rig.floor_extent()
+        corners = np.array(
+            [self.to_pixels(p) for p in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))],
+            dtype=np.int32,
+        )
+        cv2.fillConvexPoly(canvas, corners, plate, cv2.LINE_AA)
+        start = np.ceil(x0 / self.grid_step_m) * self.grid_step_m
+        for x in np.arange(start, x1, self.grid_step_m):
+            cv2.line(
+                canvas,
+                self.to_pixels((x, y0)),
+                self.to_pixels((x, y1)),
+                line,
+                1,
+                cv2.LINE_AA,
+            )
+        start = np.ceil(y0 / self.grid_step_m) * self.grid_step_m
+        for y in np.arange(start, y1, self.grid_step_m):
+            cv2.line(
+                canvas,
+                self.to_pixels((x0, y)),
+                self.to_pixels((x1, y)),
+                line,
+                1,
+                cv2.LINE_AA,
+            )
+        cv2.polylines(canvas, [corners], True, edge, 2, cv2.LINE_AA)
         return canvas
 
     def draw_cameras(
@@ -218,25 +279,49 @@ class BevRenderer:
         camera_order: list[str] | None = None,
     ) -> Image:
         """Draw one BEV frame."""
+        self._record_trails(snapshots)
+        self._shown = (list(snapshots), frame, camera_positions)
+        return self._draw(snapshots, frame, camera_positions, camera_order)
+
+    def repaint(self, camera_order: list[str] | None = None) -> Image | None:
+        """Redraw the last frame. Does not move tracks or extend trails.
+
+        Used when the live view switches the schematic plate or the coverage
+        polygons. Passing ``camera_order`` draws frusta; ``None`` leaves them off.
+        """
+        if self._shown is None:
+            return None
+        snapshots, frame, camera_positions = self._shown
+        return self._draw(snapshots, frame, camera_positions, camera_order)
+
+    def _record_trails(self, snapshots: list[GlobalTrackSnapshot]) -> None:
+        live_ids = {s.global_id for s in snapshots}
+        for gid in list(self._trails):
+            if gid not in live_ids:
+                del self._trails[gid]
+                self._coasting.pop(gid, None)
+        for snap in snapshots:
+            px = self.to_pixels(snap.world_xy)
+            self._trails[snap.global_id].append(px)
+            self._coasting[snap.global_id].append(snap.state is TrackState.COASTING)
+
+    def _draw(
+        self,
+        snapshots: list[GlobalTrackSnapshot],
+        frame: int | None,
+        camera_positions: dict[str, tuple[float, float]] | None,
+        camera_order: list[str] | None,
+    ) -> Image:
         canvas = self._blank()
         if camera_order is not None:
             self.draw_camera_frustums(canvas, camera_order)
         if camera_positions:
             self.draw_cameras(canvas, camera_positions, camera_order)
 
-        live_ids = {s.global_id for s in snapshots}
-        for gid in list(self._trails):
-            if gid not in live_ids:
-                del self._trails[gid]
-                self._coasting.pop(gid, None)
-
         for snap in snapshots:
             coasting = snap.state is TrackState.COASTING
             colour = id_color(snap.global_id)
             px = self.to_pixels(snap.world_xy)
-            self._trails[snap.global_id].append(px)
-            self._coasting[snap.global_id].append(coasting)
-
             trail = list(self._trails[snap.global_id])
             flags = list(self._coasting[snap.global_id])
             for i in range(1, len(trail)):
@@ -285,7 +370,13 @@ class BevRenderer:
                 cv2.LINE_AA,
             )
 
-        header = f"BEV  ({self.units})"
+        if self.appearance == "schematic":
+            x0, y0, x1, y1 = self.rig.floor_extent()
+            header = f"SCHEMATIC ({self.units})"
+            footer = f"SCHEMATIC {x1 - x0:g}x{y1 - y0:g} grid - no floor-plan image"
+        else:
+            header = f"BEV  ({self.units})"
+            footer = f"{self.grid_step_m:g} {self.units} grid"
         if frame is not None:
             header += f"   frame {frame}"
         cv2.putText(
@@ -293,11 +384,11 @@ class BevRenderer:
         )
         cv2.putText(
             canvas,
-            f"{self.grid_step_m:g} {self.units} grid",
+            footer,
             (10, self.canvas_size[1] - 12),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.42,
-            GRID_COLOR,
+            GRID_COLOR if self.appearance != "schematic" else (196, 198, 202),
             1,
             cv2.LINE_AA,
         )
@@ -306,3 +397,4 @@ class BevRenderer:
     def reset(self) -> None:
         self._trails.clear()
         self._coasting.clear()
+        self._shown = None

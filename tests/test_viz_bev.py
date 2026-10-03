@@ -15,6 +15,7 @@ import numpy as np
 from mcreid.calib.schema import RigCalib
 from mcreid.sim.toy import bedroom_rig
 from mcreid.viz.bev import BevRenderer
+from mcreid.viz.palette import FLOOR_COLOR
 
 ROOM = (6.0, 5.0)
 
@@ -52,3 +53,34 @@ def test_the_unit_label_is_settable_for_the_grid_metric_arm() -> None:
     assert grid.units == "grid cells"
     # Different label text means different pixels in the header band.
     assert not np.array_equal(metric.render([], frame=1), grid.render([], frame=1))
+
+
+def test_schematic_plate_uses_the_same_grid_and_says_so() -> None:
+    """No floor-plan image ships with EPFL. The plate is the rig extent."""
+    rig = RigCalib(
+        cameras=[c.to_calib(floor_extent_m=(0.0, 0.0, 56.0, 56.0)) for c in bedroom_rig()]
+    )
+    working = BevRenderer(rig, canvas_size=(640, 640), margin_m=1.0, grid_step_m=4.0)
+    origin = working.to_pixels((0.0, 0.0))
+    far = working.to_pixels((56.0, 56.0))
+    schematic = BevRenderer(
+        rig, canvas_size=(640, 640), margin_m=1.0, grid_step_m=4.0, units="grid cells"
+    )
+    schematic.appearance = "schematic"
+    assert schematic.to_pixels((0.0, 0.0)) == origin
+    assert schematic.to_pixels((56.0, 56.0)) == far
+    plate = schematic.render([])
+    working_px = working.render([])
+    col, row = schematic.to_pixels((30.0, 30.0))
+    assert tuple(int(v) for v in plate[row, col]) != FLOOR_COLOR
+    assert tuple(int(v) for v in working_px[row, col]) == FLOOR_COLOR
+    out_col, out_row = schematic.to_pixels((-0.6, -0.6))
+    assert tuple(int(v) for v in plate[out_row, out_col]) != tuple(int(v) for v in plate[row, col])
+    try:
+        refused = BevRenderer(rig, canvas_size=(320, 320), units="metres")
+        refused.appearance = "schematic"
+        refused.render([])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a schematic plate must not claim metres")
