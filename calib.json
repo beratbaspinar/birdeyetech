@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-29T15:16:14.548151+00:00",
+  "world_notes": "Floor-marker calibration: every camera fitted to ONE shared list of world points, so positions are comparable between cameras and metric on the floor plane. Off-plane geometry is not modelled.",
+  "cameras": [
+    {
+      "camera_id": "cam0",
+      "intrinsics": {
+        "fx": 576.0,
+        "fy": 576.0,
+        "cx": 288.0,
+        "cy": 512.0,
+        "dist_coeffs": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "image_width": 576,
+        "image_height": 1024,
+        "rms_reproj_px": 0.0,
+        "n_views": 0
+      },
+      "ground": {
+        "H_img2world": [
+          [
+            0.019875736779817955,
+            -0.002323697832863983,
+            -0.7617217564462653
+          ],
+          [
+            -0.0006752404260898002,
+            -0.025085925960135282,
+            21.368312490296592
+          ],
+          [
+            -0.0005346317507377592,
+            0.010250125062449364,
+            1.0
+          ]
+        ],
+        "method": "four_point",
+        "rms_error_m": 0.006669022759872737,
+        "n_correspondences": 5,
+        "floor_extent_m": [
+          -1.0,
+          -1.0,
+          1.8900000000000001,
+          3.355
+        ]
+      },
+      "height_m": null,
+      "notes": "floor-marker calibration, 6 shared points, no lens model estimated"
+    },
+    {
+      "camera_id": "cam1",
+      "intrinsics": {
+        "fx": 576.0,
+        "fy": 576.0,
+        "cx": 288.0,
+        "cy": 512.0,
+        "dist_coeffs": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "image_width": 576,
+        "image_height": 1024,
+        "rms_reproj_px": 0.0,
+        "n_views": 0
+      },
+      "ground": {
+        "H_img2world": [
+          [
+            0.006246318754780462,
+            -0.0004588157749655924,
+            -2.392571632988173
+          ],
+          [
+            0.001784820892397728,
+            -0.017113629550496036,
+            8.761901861570182
+          ],
+          [
+            -0.00033587884930865824,
+            -0.004157686282183051,
+            1.0
+          ]
+        ],
+        "method": "four_point",
+        "rms_error_m": 0.010834062400663761,
+        "n_correspondences": 5,
+        "floor_extent_m": [
+          -1.0,
+          -1.0,
+          1.8900000000000001,
+          3.355
+        ]
+      },
+      "height_m": null,
+      "notes": "floor-marker calibration, 6 shared points, no lens model estimated"
+    }
+  ]
+}

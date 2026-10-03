@@ -27,7 +27,7 @@
     "derived_from": "distinct-person nearest-neighbour p05 = 6.1 cells (EPFL GT)"
   },
   "detector": {
-    "weights": "weights\\yolo11x.pt",
+    "weights": "weights/yolo11x.pt",
     "imgsz": 640,
     "conf": 0.25
   },
@@ -37,14 +37,14 @@
   "per_view_n_init_why": "GT is annotated once a second; consecutive boxes do not overlap, so the IoU-continuity tracker never confirms at the default n_init=5. Same reasoning and same value as cli/eval_wildtrack.py. D-002 consequence accepted: the dormant-adoption window is empty at n_init=1.",
   "artifacts": {
     "bev_mp4": {
-      "path": "docs\\assets\\epfl_demo_bev.mp4",
-      "sha256": "4ee77ec22fe4b96904818bbd70415c23e547ce5af5ca45ce0f02be8728c2c799",
-      "bytes": 1090720
+      "path": "docs/assets/epfl_demo_bev.mp4",
+      "sha256": "7c0998c9c514ab008f7465b9ff9855d0c340c9092f1da00689d70bb34e153a3e",
+      "bytes": 1087678
     },
     "bev_gif": {
-      "path": "docs\\assets\\epfl_demo_bev.gif",
-      "sha256": "b877e966b58afaa5e365b2065b3e8f9d264dd82a1c55562ba45e82ff6a8caa39",
-      "bytes": 1518357
+      "path": "docs/assets/epfl_demo_bev.gif",
+      "sha256": "e4011ca2e9ff452a9302dd08bad6d0f07834f13cdb0f32f595359d1a734a7daa",
+      "bytes": 1671141
     },
     "contains_dataset_pixels": false,
     "note": "BEV canvas only - procedural. Same licence rule as the WILDTRACK arm."
@@ -53,13 +53,13 @@
     "contains_dataset_pixels": true,
     "committed": false,
     "why_not_committed": "every frame is rendered from dataset footage, and CLAUDE.md's rule is that anything rendered from the dataset IS the dataset. Written under gitignored reports/; mcreid.viz.composite.assert_generated_only refuses any path under docs/. Regenerate it with the command in the README.",
-    "render_seconds": 2.97,
-    "median_ms_per_composite_frame": 12.37,
+    "render_seconds": 2.588,
+    "median_ms_per_composite_frame": 10.79,
     "stages": {
       "raw": {
         "path": "reports/epfl_demo/epfl_6p_raw.mp4",
-        "sha256": "ce558792f2826bbe30637a25d3f01b36b699b03d715c04055a2cf2b381f37529",
-        "bytes": 5768128,
+        "sha256": "f56d55c0f929317be99ec4a69d988b6b9459975cb6ddd4de6480ab66b2274014",
+        "bytes": 5753868,
         "frames": 60,
         "stage": "raw",
         "camera_panels": 4,
@@ -72,8 +72,8 @@
       },
       "boxes": {
         "path": "reports/epfl_demo/epfl_6p_boxes.mp4",
-        "sha256": "9a26552446ef5b1a858a8de0b2b2c4e8a6536268ab6b46d28d8ab8b192508a75",
-        "bytes": 6891351,
+        "sha256": "cdd2bbbcc375e9c1267c8ad45008e6718779d921ca9627890bb6a4f22acb43bd",
+        "bytes": 6879932,
         "frames": 60,
         "stage": "boxes",
         "camera_panels": 4,
@@ -86,29 +86,29 @@
       },
       "ids": {
         "path": "reports/epfl_demo/epfl_6p_ids.mp4",
-        "sha256": "48904737e40716c2e15e1e0458561af1bb7563837734d006b0848abd9b4d50bb",
-        "bytes": 6677248,
+        "sha256": "fcef337d76f0400f0554298cfbe1b61fd712b5d1d0242affe1403dd31aff7519",
+        "bytes": 6662331,
         "frames": 60,
         "stage": "ids",
         "camera_panels": 4,
-        "labelled_boxes": 225,
-        "assigned_boxes_withheld_because_not_on_the_map": 115,
-        "frames_with_an_id_in_multiple_panels": 39,
-        "max_ids_in_multiple_panels_in_a_frame": 3,
+        "labelled_boxes": 219,
+        "assigned_boxes_withheld_because_not_on_the_map": 121,
+        "frames_with_an_id_in_multiple_panels": 37,
+        "max_ids_in_multiple_panels_in_a_frame": 4,
         "id_colour_conflicts": [],
         "id_colour_consistent": true
       },
       "composite": {
         "path": "reports/epfl_demo/epfl_6p_composite.mp4",
-        "sha256": "d2966da0b81104ca9f8465adae298b734a1a6007f4a8b20e301e32b0c604483b",
-        "bytes": 7381453,
+        "sha256": "cef42a831e2167d3a435d0122ce6e86796b1a2a20bf62f24b54891957cd10a12",
+        "bytes": 7367058,
         "frames": 60,
         "stage": "composite",
         "camera_panels": 4,
-        "labelled_boxes": 225,
-        "assigned_boxes_withheld_because_not_on_the_map": 115,
-        "frames_with_an_id_in_multiple_panels": 39,
-        "max_ids_in_multiple_panels_in_a_frame": 3,
+        "labelled_boxes": 219,
+        "assigned_boxes_withheld_because_not_on_the_map": 121,
+        "frames_with_an_id_in_multiple_panels": 37,
+        "max_ids_in_multiple_panels_in_a_frame": 4,
         "id_colour_conflicts": [],
         "id_colour_consistent": true
       }
@@ -117,18 +117,18 @@
   "arms": {
     "calibrated": {
       "ids_issued": 35,
-      "ids_shown": 9,
-      "mean_live_ids_per_frame": 3.2,
+      "ids_shown": 10,
+      "mean_live_ids_per_frame": 3.1666666666666665,
       "id_switches": 27,
-      "mean_position_error_cells": 1.7189560603218779,
-      "false_positive_tracks": 0
+      "mean_position_error_cells": 1.6987610603299534,
+      "false_positive_tracks": 1
     },
     "uncalibrated": {
-      "ids_issued": 89,
+      "ids_issued": 86,
       "ids_shown": 1,
       "mean_live_ids_per_frame": 0.9166666666666666,
       "id_switches": 0,
-      "mean_position_error_cells": 1.6792721787157958,
+      "mean_position_error_cells": 1.4952428381867147,
       "false_positive_tracks": 0
     }
   }
