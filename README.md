@@ -43,19 +43,77 @@ Linux or Windows, CUDA 12.6:
 uv pip install -e ".[dev,perception]" --extra-index-url https://download.pytorch.org/whl/cu126
 ```
 
-Weights are not in git. Before any real-video command, put these under
-`weights/` (the directory and `*.pt` / `*.pth` are gitignored):
-
-| file | used for |
-|---|---|
-| `weights/yolo11x.pt` | published EPFL and WILDTRACK detector |
-| `weights/yolo11s.pt` | interactive EPFL window and the office replay, when speed matters |
-| `weights/osnet_x1_0_msmt17.pth` | appearance. URL and SHA-256 are `OSNET_MSMT17` in `src/mcreid/track/reid_models.py` |
-
 `auto` device order is CUDA, then Apple MPS, then CPU. MPS runs fp32
 (`half=False`). The long EPFL and WILDTRACK jobs refuse CPU unless
 `--allow-cpu`. On the machine that timed the live window below, CUDA was
 absent and the probe resolved to MPS.
+
+### Fresh clone — what a second machine has to download
+
+Cloning does **not** bring EPFL, WILDTRACK, or model weights. `data/` and
+`weights/` are gitignored. The clone does include the procedural GIFs, the
+two office clips (`cam0.mp4`, `cam1.mp4`), and `outputs/demo/recorded.mp4`.
+
+```bash
+git clone https://github.com/beratbaspinar/birdeyetech.git
+cd birdeyetech
+uv venv --python 3.11
+uv pip install -e ".[dev,perception]"
+```
+
+On Linux or Windows with CUDA 12.6, add
+`--extra-index-url https://download.pytorch.org/whl/cu126` to that last
+command. macOS must not.
+
+**1. EPFL videos** (~310 MB, no registration). This is the only fetch for the
+Laboratory sequence. It writes four files and two text files into
+`data/epfl_lab/` and nothing else — no floor-plan image, no WILDTRACK:
+
+```bash
+uv run python scripts/fetch_epfl.py
+```
+
+You should then have `6p-c0.avi` … `6p-c3.avi`, `calibration-6p.txt`, and
+`gt_lab_6p.txt`. Re-running the script skips files that are already there.
+
+**2. Detector weights, by hand.** The live window and the benchmark both
+refuse to start if the `.pt` file is missing. Ultralytics is not asked to
+fetch it. Interactive demo (smaller, ~19 MB):
+
+```bash
+mkdir -p weights
+curl -L --fail -o weights/yolo11s.pt \
+  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt
+```
+
+Published EPFL / WILDTRACK detector (~110 MB). Same release, different file.
+Use this when you omit `--weights`, because that default is `yolo11x.pt`:
+
+```bash
+curl -L --fail -o weights/yolo11x.pt \
+  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11x.pt
+```
+
+**3. Appearance weights, automatic.** The first command that embeds a person
+runs `curl` and checks the SHA-256 of `weights/osnet_x1_0_msmt17.pth` against
+`OSNET_MSMT17` in `src/mcreid/track/reid_models.py`. `curl` has to be on
+`PATH`. If the download fails, the error prints the URL and the path to fill
+in by hand.
+
+**4. Open the window.** People enter around frame 100, so start there:
+
+```bash
+uv run mcreid-public-demo epfl --live-view --live-start 100 --presentation-map --weights weights/yolo11s.pt
+```
+
+`q` or Esc closes it, space pauses, `r` restarts at frame 100. Drop
+`--weights weights/yolo11s.pt` only after `yolo11x.pt` is in `weights/`. On
+the Mac that timed this, 11s was about 7 FPS and 11x about 2 FPS. Keys and
+the schematic plate are under
+[Watch EPFL](#watch-epfl--consecutive-frames-one-window).
+
+WILDTRACK is a separate download and a separate consent step. `fetch_epfl.py`
+does not touch it. See [WILDTRACK](#wildtrack) below.
 
 ### What runs, and what each command is for
 
@@ -692,7 +750,10 @@ uv venv --python 3.11 && uv pip install -e ".[dev]"
 
 ### The sparse demo (the first GIF on this page) — EPFL Laboratory
 
-~310 MB, direct from EPFL, no registration.
+~310 MB, direct from EPFL, no registration. The detector file is not part of
+that download — put `weights/yolo11x.pt` in place first. Clone, both weight
+files, and the live-window command are in
+[Fresh clone](#fresh-clone--what-a-second-machine-has-to-download).
 
 ```bash
 uv run python scripts/fetch_epfl.py
