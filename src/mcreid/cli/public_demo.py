@@ -53,6 +53,7 @@ import numpy.typing as npt
 import typer
 
 from mcreid.calib.epfl import (
+    GT_COORDINATE_CONVENTION,
     build_rig,
     grid_id_to_world_m,
     parse_calibration,
@@ -638,7 +639,6 @@ EPFL_CELL_UNIT = 1.0  # world unit == one grid cell, by construction
 EPFL_BIRTH_CLUSTER_CELLS = 3.0
 EPFL_MERGE_CELLS = 2.25
 EPFL_IMAGE_SIZE = (360, 288)
-EPFL_GT_STRIDE = 25  # the ground truth is annotated once a second at 25 fps
 
 
 # EVERY metric constant in the fusion path, re-derived — not just the two obvious
@@ -781,7 +781,21 @@ def epfl(
     ]
     for index, capture in enumerate(captures):
         if not capture.isOpened():
+            for opened in captures:
+                opened.release()
             raise typer.BadParameter(f"could not open {root}/{sequence}-c{index}.avi")
+
+    # The GT header stores an annotation interval, not FPS. These happen to
+    # both be 25 for the Laboratory recording; treating them as the same field
+    # would silently change the motion model when another recording is used.
+    video_rates = [float(c.get(cv2.CAP_PROP_FPS)) for c in captures]
+    if any(not np.isfinite(rate) or rate <= 0 for rate in video_rates) or not np.allclose(
+        video_rates, video_rates[0], rtol=0.0, atol=1e-3
+    ):
+        for capture in captures:
+            capture.release()
+        raise typer.BadParameter("EPFL recordings need valid, matching video FPS")
+    video_fps = video_rates[0]
 
     annotated = sorted(positions)[start : start + n_frames]
     if not annotated:
@@ -806,7 +820,7 @@ def epfl(
         kept.append(row)
     for capture in captures:
         capture.release()
-    stride_s = EPFL_GT_STRIDE / float(header["fps"])
+    stride_s = header["step_size"] / video_fps
     typer.echo(f"decoded {len(kept)} annotated frames ({stride_s:.1f} s apart)")
 
     view_config = GpuViewConfig(
@@ -922,6 +936,9 @@ def epfl(
         "scale_derivation": "ATTEMPTED AND DEAD-ENDED - fallback to grid units taken",
         "sequence": sequence,
         "annotated_frames": len(kept),
+        "ground_truth_convention": GT_COORDINATE_CONVENTION,
+        "annotation_step_frames": header["step_size"],
+        "video_fps": video_fps,
         "seconds_between_frames": stride_s,
         "cameras": len(rig.cameras),
         "grid": {"w": grid[0], "h": grid[1]},

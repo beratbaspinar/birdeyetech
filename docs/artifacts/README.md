@@ -1,5 +1,30 @@
 # Measurement artifacts
 
+## EPFL convention update — 2026-10-08
+
+`epfl_demo.json` and `epfl_instrument.json` were generated using the former
+cell-corner GT convention. They remain historical evidence, not measurements
+of the corrected cell-centre evaluator. The summary writers now add
+`ground_truth_convention: cell_center_v1`; missing this key means an old result.
+Regenerate both files on the same detector/frames/configuration before using
+the current evaluator's accuracy. Their numeric values have not been edited.
+
+`epfl_geometry.json` is the new **coverage-only** report on the official 6-person
+GT and calibration files, with their SHA-256 fingerprints. It measures 456/476
+positions (95.8%) inside at least two camera frames under `cell_center_v1`.
+It does not run a detector, measure ID switches or establish physical metre scale.
+Its top-level `pass` is `null` and `B_agreement.status` is `not_run`.
+
+```bash
+uv run python scripts/check_epfl_instrument.py --geometry-only
+```
+
+```bash
+uv run python scripts/fetch_epfl.py
+uv run python scripts/check_epfl_instrument.py
+uv run mcreid-public-demo epfl --stages all
+```
+
 The raw JSON behind every WILDTRACK number quoted in the top-level README and in
 [`../wildtrack_results.md`](../wildtrack_results.md). They are committed so the
 tables can be checked without a 6.8 GB dataset download and a GPU.

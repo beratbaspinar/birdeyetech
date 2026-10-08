@@ -1,0 +1,31 @@
+{
+  "scope": "coverage_only",
+  "what_this_proves": "GT cell-centre projections fall in at least two camera frames.",
+  "units": "grid cells",
+  "ground_truth_convention": "cell_center_v1",
+  "dataset_header": {
+    "n_frames": 2955,
+    "n_people": 6,
+    "grid_w": 56,
+    "grid_h": 56,
+    "step_size": 25,
+    "first_frame": 0,
+    "last_frame": 2950
+  },
+  "calibration_sha256": "999ce35ba279dc396ace18cbfd39cc49a490e77fc3b3dcb4fb24ef3fc66a919c",
+  "ground_truth_sha256": "c68c518f27fff7131b41ba5e0a597b0255a6362edfcb31e4cba28e942a882733",
+  "A_coverage": {
+    "annotated_positions": 476,
+    "min_cameras_required": 2,
+    "fraction_seen_by_enough_cameras": 0.957983193277311,
+    "required": 0.8,
+    "mean_cameras_seeing": 3.319327731092437,
+    "pass": true
+  },
+  "B_agreement": {
+    "status": "not_run",
+    "reason": "--geometry-only"
+  },
+  "evaluation_complete": false,
+  "pass": null
+}

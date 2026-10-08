@@ -236,7 +236,10 @@ class BevRenderer:
         area, clipped = cv2.intersectConvexConvex(hull, room)
         if clipped is None or area <= 0.0:
             return np.empty((0, 2), dtype=np.float64)
-        return np.asarray(clipped, dtype=np.float64).reshape(-1, 2)
+        polygon = np.asarray(clipped, dtype=np.float64).reshape(-1, 2)
+        # OpenCV intersects in float32; rounding can leave vertices a few
+        # micrometres outside the rectangle. Enforce the room bound explicitly.
+        return np.clip(polygon, [rx0, ry0], [rx1, ry1])
 
     def draw_camera_frustums(
         self, canvas: Image, camera_order: list[str] | None = None, alpha: float = 0.10

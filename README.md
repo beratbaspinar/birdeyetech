@@ -1,5 +1,33 @@
 # mcreid — multi-camera persistent-ID tracking with a live BEV map
 
+## vA Guard development continuation — 2026-10-08
+
+The product scope is **vA Guard**. The existing face-recognition and floor-plan
+tracking system is the starting point. This repository and EPFL support tracking
+validation for Guard; the next product work is authorization, zone rules,
+procedure assurance and evidence-backed events.
+See the [vA Guard development plan](docs/va_guard_development_plan.md).
+EPFL ground truth now uses **cell centres**, matching CVLab's `grid_to_tv`
+reference, and its header exposes `step_size` (annotation interval in frames)
+instead of mislabelling it as video FPS. The offline demo reads FPS from the videos.
+New summaries carry `ground_truth_convention: cell_center_v1`.
+`scripts/check_epfl_instrument.py --geometry-only` checks GT projection coverage
+without videos, model weights or a GPU. Its separate report never claims that
+the detector agreement check ran.
+Two existing map rendering defects are also corrected: the live-view title
+does not overlap the map, and camera footprints respect the room boundary
+after OpenCV's float32 clipping.
+
+The committed EPFL metrics below predate this correction and are historical:
+rerun the instrument and offline benchmark before citing current EPFL accuracy.
+No new accuracy or identity-continuity result is claimed by this correction.
+EPFL Laboratory positions remain in **grid cells**, with no established metre scale.
+
+```bash
+uv sync --extra dev
+uv run pytest tests/test_calib_epfl.py
+```
+
 A few overlapping cameras, one global ID per person. Someone entering any view
 gets an identity and keeps it across camera handoffs, through occlusions — even
 total occlusion from every camera at once — and across absences of minutes.
