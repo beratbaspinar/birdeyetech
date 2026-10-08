@@ -1,38 +1,19 @@
-"""EPFL CVLab multi-camera pedestrian sequences — calibration, in metres.
+"""EPFL Laboratory calibration and ground truth, in explicitly labelled grid units.
 
-The dataset ships two homographies per camera, both mapping the **same**
-discretised top-view grid into the image: one onto the floor, one onto a plane
-its documentation states is exactly 1.75 m higher. It does not ship intrinsics,
-and it does not say how big a grid cell is.
+The shipped homographies map camera-image pixels INTO the top view, not its
+inverse. Laboratory ground truth uses row-major cell indices; positions refer
+to cell CENTRES, as defined by CVLab's ``grid_to_tv`` reference function.
 
-That last omission matters more than it looks. Every threshold in this repo is
-metric — a 0.35 m merge radius, a 1.0 m birth-clustering radius — so a wrong cell
-size silently rescales the entire fusion stage while every gate stays green. It
-is therefore **derived here, never guessed**, and the derivation carries its own
-validation (`plan-public-demo.md` §10, written before the number was computed).
+The GT header's ``step_size`` is an annotation interval in VIDEO FRAMES, not
+video FPS. Video FPS must be read separately from the recording.
 
-## The derivation
+The legacy scale-estimation functions below implement a hypothesis whose checks
+failed on this rig (``plan-public-demo.md`` section 10). They do not establish a
+physical scale. The Laboratory demo uses one world unit per grid cell; nominal
+intrinsics exist only to satisfy the shared schema and must not be used for 3D
+triangulation or metric claims.
 
-With the grid→world map written as a similarity of unknown cell size `s`:
-
-    H_g ∝ K [ s·r1 , s·r2 , x0·r1 + y0·r2 + t ]
-    H_h ∝ K [ s·r1 , s·r2 , x0·r1 + y0·r2 + t + h·r3 ]        h = 1.75 m
-
-Normalise the pair so their first two columns agree; the third columns then
-differ by exactly `d = h·K·r3`. Since ‖r1‖ = ‖r3‖ = 1,
-
-    ‖K⁻¹·H_g[:,0]‖ = s        and        ‖K⁻¹·d‖ = h
-
-so `s = h · ‖K⁻¹H_g[:,0]‖ / ‖K⁻¹d‖`.
-
-`K` is recovered from the ground homography's own Zhang constraints — `r1 ⊥ r2`
-and `‖r1‖ = ‖r2‖` — under the usual reduction to one unknown (zero skew, square
-pixels, principal point at the image centre). One constraint solves for the focal
-length; **the second is spare and becomes a check.**
-
-Four cameras give four independent estimates of one physical quantity, coupled by
-nothing but the room they are in. That is V1, and it is the check that cannot be
-argued with.
+Reference: https://www.epfl.ch/labs/cvlab/data/data-pom-index-php/
 """
 
 from __future__ import annotations
@@ -66,11 +47,12 @@ DEFAULT_GRID = (56, 56)
 # loudly at any other value.
 TOP_VIEW_PX_W = 358
 TOP_VIEW_PX_H = 360
+GT_COORDINATE_CONVENTION = "cell_center_v1"
 
 
 @dataclass(frozen=True)
 class EpflCameraCalibration:
-    """One camera's pair of grid->image homographies, as shipped."""
+    """One camera's image->top-view homographies, as shipped."""
 
     camera_id: str
     H_ground: FloatArray
@@ -241,11 +223,13 @@ def build_rig(
     image_size: tuple[int, int],
     grid: tuple[int, int] = DEFAULT_GRID,
 ) -> RigCalib:
-    """Turn the shipped homographies into a metric `RigCalib`.
+    """Turn the shipped homographies into a grid-unit `RigCalib`.
 
-    The homographies map grid->image; `mcreid` wants undistorted-image->world in
-    metres, so each is inverted and post-multiplied by the grid->metres
-    similarity. EPFL ships no distortion coefficients, so they are zero and
+    The homographies map image->top-view; each is left-multiplied by the
+    top-view->grid-unit similarity. No homography inversion is needed here.
+    ``cell_size_m`` is a legacy parameter name: 1.0 means GRID CELLS on the
+    Laboratory demo, not a measured metre per cell. EPFL ships no distortion
+    coefficients, so they are zero and
     `undistort_points` becomes a no-op — which is honest, not an approximation
     being hidden: the dataset simply does not provide them.
     """
@@ -306,35 +290,54 @@ def build_rig(
                 ),
             )
         )
-    return RigCalib(cameras=cameras, world_notes="EPFL grid scaled to metres, Z=0 floor.")
+    return RigCalib(
+        cameras=cameras,
+        world_notes="EPFL Laboratory grid units, Z=0 floor; physical scale not established.",
+    )
 
 
 def parse_ground_truth(path: Path | str) -> tuple[dict[int, dict[int, int]], dict[str, int]]:
     """Read `gt_lab_*.txt` into ``{frame: {person: grid_position_id}}`` plus its header.
 
-    The header is ``n_frames n_people grid_w grid_h fps ...``; every later line is
-    one frame, one column per person, with negative values meaning "not in the
-    room". Negatives are dropped rather than mapped, because a person who is not
-    there has no position and inventing one is how a phantom identity is born.
+    Format version 1 has a seven-field header:
+    ``n_frames n_people grid_w grid_h step_size first_frame last_frame``.
+    Every subsequent row is one VIDEO FRAME, including unlabelled rows. Do not
+    multiply row indices by ``step_size``. ``-1`` is undefined and ``-2`` is
+    outside the grid; neither has a ground position. Person IDs are column IDs,
+    not recognised face identities. Reject malformed files before evaluation.
     """
     lines = [
         line.strip()
         for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
         if line.strip()
     ]
-    # The file opens with a lone version/format line before the real header.
-    offset = 1 if len(re.split(r"\s+", lines[0])) < 5 else 0
-    fields = [int(v) for v in re.split(r"\s+", lines[offset])]
-    header = {
-        "n_frames": fields[0],
-        "n_people": fields[1],
-        "grid_w": fields[2],
-        "grid_h": fields[3],
-        "fps": fields[4],
-    }
+    if not lines:
+        raise ValueError(f"{path}: empty ground-truth file")
+    # Accept a header-only export as well as the official leading version line.
+    offset = 1 if len(lines[0].split()) == 1 else 0
+    if offset and lines[0] != "1":
+        raise ValueError(f"{path}: unsupported ground-truth version {lines[0]!r}")
+    if len(lines) <= offset:
+        raise ValueError(f"{path}: missing ground-truth header")
+    fields = [int(v) for v in lines[offset].split()]
+    if len(fields) != 7:
+        raise ValueError(f"{path}: ground-truth header needs 7 fields, got {len(fields)}")
+    names = ("n_frames", "n_people", "grid_w", "grid_h", "step_size", "first_frame", "last_frame")
+    header = dict(zip(names, fields, strict=True))
+    if any(header[name] <= 0 for name in names[:5]):
+        raise ValueError(f"{path}: frame, person, grid counts and step_size must be positive")
+    if not 0 <= header["first_frame"] <= header["last_frame"] < header["n_frames"]:
+        raise ValueError(f"{path}: invalid first_frame/last_frame range")
+    rows = lines[offset + 1 :]
+    if len(rows) != header["n_frames"]:
+        raise ValueError(f"{path}: expected {header['n_frames']} frame rows, got {len(rows)}")
     positions: dict[int, dict[int, int]] = {}
-    for frame, line in enumerate(lines[offset + 1 :]):
-        values = [int(v) for v in re.split(r"\s+", line)]
+    for frame, line in enumerate(rows):
+        values = [int(v) for v in line.split()]
+        if len(values) != header["n_people"]:
+            raise ValueError(f"{path}: frame {frame} needs {header['n_people']} person columns")
+        if any(value < -2 or value >= header["grid_w"] * header["grid_h"] for value in values):
+            raise ValueError(f"{path}: frame {frame} contains an invalid grid position")
         present = {person: value for person, value in enumerate(values) if value >= 0}
         if present:
             positions[frame] = present
@@ -342,5 +345,17 @@ def parse_ground_truth(path: Path | str) -> tuple[dict[int, dict[int, int]], dic
 
 
 def grid_id_to_world_m(position_id: int, grid_w: int, cell_size_m: float) -> tuple[float, float]:
-    """POM grid index -> world metres. Row-major, as POM enumerates it."""
-    return ((position_id % grid_w) * cell_size_m, (position_id // grid_w) * cell_size_m)
+    """POM row-major cell index -> cell centre in the caller's declared units.
+
+    The name is retained for compatibility. On the Laboratory demo,
+    ``cell_size_m=1.0`` returns grid cells, not a physical distance in metres.
+    Negative GT sentinels must be filtered by the parser, never projected.
+    """
+    if position_id < 0 or grid_w <= 0:
+        raise ValueError("position_id must be nonnegative and grid_w must be positive")
+    if not np.isfinite(cell_size_m) or cell_size_m <= 0:
+        raise ValueError("cell_size_m must be finite and positive")
+    return (
+        ((position_id % grid_w) + 0.5) * cell_size_m,
+        ((position_id // grid_w) + 0.5) * cell_size_m,
+    )

@@ -34,6 +34,7 @@ cells apart.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -41,7 +42,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from mcreid.calib.epfl import DEFAULT_GRID, build_rig, parse_calibration, parse_ground_truth
+from mcreid.calib.epfl import (
+    DEFAULT_GRID,
+    GT_COORDINATE_CONVENTION,
+    build_rig,
+    grid_id_to_world_m,
+    parse_calibration,
+    parse_ground_truth,
+)
 from mcreid.calib.geometry import ground_to_image, image_to_ground
 from mcreid.cli.public_demo import EPFL_BIRTH_CLUSTER_CELLS, EPFL_CELL_UNIT, EPFL_IMAGE_SIZE
 from mcreid.track.gpu_view import GpuPerViewBackend, GpuViewConfig
@@ -65,10 +73,17 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=20, help="Annotated frames for check B.")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--allow-cpu", action="store_true")
+    parser.add_argument(
+        "--geometry-only", action="store_true", help="Check A only, without videos/models/GPU."
+    )
+    parser.add_argument(
+        "--out", type=Path, help="Report path; coverage-only has a separate default."
+    )
     args = parser.parse_args()
 
     setup_logging("INFO")
-    probe_compute_device(args.device, "check_epfl_instrument", allow_cpu=args.allow_cpu)
+    if not args.geometry_only:
+        probe_compute_device(args.device, "check_epfl_instrument", allow_cpu=args.allow_cpu)
 
     calibs = parse_calibration(args.root / f"calibration-{args.sequence}.txt")
     positions, header = parse_ground_truth(args.root / f"gt_lab_{args.sequence}.txt")
@@ -81,14 +96,7 @@ def main() -> int:
     seen_counts = []
     for row in rows:
         for position_id in positions[row].values():
-            world = np.array(
-                [
-                    [
-                        (position_id % grid[0]) * EPFL_CELL_UNIT,
-                        (position_id // grid[0]) * EPFL_CELL_UNIT,
-                    ]
-                ]
-            )
+            world = np.array([grid_id_to_world_m(position_id, grid[0], EPFL_CELL_UNIT)])
             n_seeing = 0
             for cam in rig.cameras:
                 pixels, valid = ground_to_image(cam, world)
@@ -99,8 +107,43 @@ def main() -> int:
                     n_seeing += 1
             seen_counts.append(n_seeing)
     seen = np.asarray(seen_counts)
-    coverage = float(np.mean(seen >= MIN_CAMERAS_SEEING))
+    coverage = float(np.mean(seen >= MIN_CAMERAS_SEEING)) if seen.size else 0.0
     a_ok = coverage >= MIN_COVERAGE_FRACTION
+    coverage_report = {
+        "annotated_positions": int(seen.size),
+        "min_cameras_required": MIN_CAMERAS_SEEING,
+        "fraction_seen_by_enough_cameras": coverage,
+        "required": MIN_COVERAGE_FRACTION,
+        "mean_cameras_seeing": float(seen.mean()) if seen.size else 0.0,
+        "pass": bool(a_ok),
+    }
+    provenance = {
+        "dataset_header": header,
+        "calibration_sha256": hashlib.sha256(
+            (args.root / f"calibration-{args.sequence}.txt").read_bytes()
+        ).hexdigest(),
+        "ground_truth_sha256": hashlib.sha256(
+            (args.root / f"gt_lab_{args.sequence}.txt").read_bytes()
+        ).hexdigest(),
+    }
+    if args.geometry_only:
+        output = args.out or OUT.with_name("epfl_geometry.json")
+        result = {
+            "scope": "coverage_only",
+            "what_this_proves": "GT cell-centre projections fall in at least two camera frames.",
+            "units": "grid cells",
+            "ground_truth_convention": GT_COORDINATE_CONVENTION,
+            **provenance,
+            "A_coverage": coverage_report,
+            "B_agreement": {"status": "not_run", "reason": "--geometry-only"},
+            "evaluation_complete": False,
+            "pass": None,  # Never represent an unrun detector check as a full instrument PASS.
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        print(f"[{'PASS' if a_ok else 'FAIL'}] A coverage: {coverage:.1%}; B NOT RUN")
+        print(f"wrote {output}")
+        return 0 if a_ok else 1
 
     # --- B. agreement, against the detector ----------------------------------
     backends = {
@@ -125,7 +168,7 @@ def main() -> int:
             world, valid = image_to_ground(cam, feet)
             truth = np.array(
                 [
-                    [(p % grid[0]) * EPFL_CELL_UNIT, (p // grid[0]) * EPFL_CELL_UNIT]
+                    grid_id_to_world_m(p, grid[0], EPFL_CELL_UNIT)
                     for p in positions[row].values()
                 ]
             )
@@ -146,14 +189,10 @@ def main() -> int:
             "refactored_method.md section 3."
         ),
         "units": "grid cells",
-        "A_coverage": {
-            "annotated_positions": int(seen.size),
-            "min_cameras_required": MIN_CAMERAS_SEEING,
-            "fraction_seen_by_enough_cameras": coverage,
-            "required": MIN_COVERAGE_FRACTION,
-            "mean_cameras_seeing": float(seen.mean()),
-            "pass": bool(a_ok),
-        },
+        "ground_truth_convention": GT_COORDINATE_CONVENTION,
+        **provenance,
+        "evaluation_complete": True,
+        "A_coverage": coverage_report,
         "B_agreement": {
             "n_detections": len(distances),
             "median_cells_to_nearest_gt": median_cells,
@@ -168,8 +207,9 @@ def main() -> int:
         },
         "pass": bool(a_ok and b_ok),
     }
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    output = args.out or OUT
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
     print(f"[{'PASS' if a_ok else 'FAIL'}] A coverage: {coverage:.1%} of {seen.size} annotated "
           f"positions seen by >= {MIN_CAMERAS_SEEING} cameras (need {MIN_COVERAGE_FRACTION:.0%}), "
@@ -177,7 +217,7 @@ def main() -> int:
     print(f"[{'PASS' if b_ok else 'FAIL'}] B agreement: median {median_cells:.2f} cells from a "
           f"detected foot to the nearest annotated person (max {MAX_MEDIAN_CELLS}), "
           f"n={len(distances)}")
-    print(f"\nwrote {OUT.relative_to(REPO)}")
+    print(f"\nwrote {output}")
     return 0 if result["pass"] else 1
 
 

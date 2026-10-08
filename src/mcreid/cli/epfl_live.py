@@ -72,8 +72,8 @@ _BAD: tuple[int, int, int] = (60, 60, 220)
 
 # Extended codes only. 81/83 are also 'Q'/'S' from waitKey, so arrows that
 # arrive as those bytes are not bound; a/d are the reliable step keys.
-_LEFT_KEYS = {63234, 2424832, 65361, 0xFF51}
-_RIGHT_KEYS = {63235, 2555904, 65363, 0xFF53}
+_LEFT_KEYS = {63234, 2424832, 0xFF51}
+_RIGHT_KEYS = {63235, 2555904, 0xFF53}
 
 
 @dataclass(frozen=True)
@@ -186,7 +186,9 @@ def preview_layout(bev_width: int, bev_height: int) -> PreviewLayout:
     right_x = GAP + TILE_W + GAP + TILE_W + GAP
     right_w = PREVIEW_W - right_x - GAP
     origin_x = right_x + max((right_w - bev_width) // 2, 0)
-    list_y = HEADER_H + bev_height + 12
+    # putText's origin is the glyph baseline. Leave room for the title's
+    # ascenders and antialiasing so it cannot paint over the BEV above it.
+    list_y = HEADER_H + bev_height + 24
     return PreviewLayout(
         tiles=tiles,
         bev_origin=(origin_x, HEADER_H),
