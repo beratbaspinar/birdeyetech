@@ -1,8 +1,12 @@
 # mcreid — multi-camera persistent-ID tracking with a live BEV map
 
-## VisioAir development continuation — 2026-10-08
+## vA Guard development continuation — 2026-10-08
 
-The next integration plan is in [Spatial / identity / Guard development](docs/visioair_spatial_next_phase.md).
+The product scope is **vA Guard**. The existing face-recognition and floor-plan
+tracking system is the starting point. This repository and EPFL support tracking
+validation for Guard; the next product work is authorization, zone rules,
+procedure assurance and evidence-backed events.
+See the [vA Guard development plan](docs/va_guard_development_plan.md).
 EPFL ground truth now uses **cell centres**, matching CVLab's `grid_to_tv`
 reference, and its header exposes `step_size` (annotation interval in frames)
 instead of mislabelling it as video FPS. The offline demo reads FPS from the videos.
